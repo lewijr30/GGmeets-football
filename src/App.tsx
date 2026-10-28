@@ -26,6 +26,7 @@ import {
   PaymentMethod,
   UserProfile,
 } from './types';
+import { getMatchCapacity } from './utils/capacity';
 
 const ADMIN_TOKEN_STORAGE_KEY = 'gg_admin_lock_token';
 
@@ -63,6 +64,38 @@ function normalizePath(path: string): string {
   return trimmed === '' ? '/' : trimmed;
 }
 
+function playNotificationChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(587.33, now); // D5
+    osc1.frequency.setValueAtTime(880, now + 0.12); // A5
+    gain1.gain.setValueAtTime(0.14, now);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
+
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.45);
+  } catch {
+    // Ignore audio autoplay restrictions
+  }
+}
+
+type ServerRealtimeMessage =
+  | { type: 'state:sync'; events: MatchEvent[]; bookings: Booking[] }
+  | { type: 'booking:created'; booking: Booking }
+  | { type: 'booking:updated'; booking: Booking }
+  | { type: 'event:created'; event: MatchEvent }
+  | { type: 'event:updated'; event: MatchEvent }
+  | { type: 'event:deleted'; eventId: string };
+
 export function App() {
   const [pathname, setPathname] = useState<string>(() =>
     normalizePath(window.location.pathname)
@@ -77,21 +110,22 @@ export function App() {
   const [isCheckingLock, setIsCheckingLock] = useState<boolean>(true);
   const [changePasswordOpen, setChangePasswordOpen] = useState<boolean>(false);
 
-  const [events, setEvents] = useState<MatchEvent[]>(() =>
-    loadFromStorage('gg_events', DEFAULT_GAMES)
-  );
-  const [bookings, setBookings] = useState<Booking[]>(() =>
-    loadFromStorage('gg_bookings', DEFAULT_BOOKINGS)
-  );
+  const [events, setEvents] = useState<MatchEvent[]>(DEFAULT_GAMES);
+  const [bookings, setBookings] = useState<Booking[]>(DEFAULT_BOOKINGS);
   const [userProfile, setUserProfile] = useState<UserProfile>(() =>
     loadFromStorage('gg_profile', DEFAULT_PROFILE)
+  );
+
+  const [liveAdminAlerts, setLiveAdminAlerts] = useState<Booking[]>([]);
+  const [browserNotifPermission, setBrowserNotifPermission] = useState<string>(() =>
+    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   );
 
   const [activeCategory, setActiveCategory] = useState<EventCategory>('All');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const [selectedEvent, setSelectedEvent] = useState<MatchEvent | null>(null);
-  const [detailModalEvent, setDetailModalEvent] = useState<MatchEvent | null>(null);
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [detailModalEventId, setDetailModalEventId] = useState<string | null>(null);
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
   const [receiptFilePreview, setReceiptFilePreview] = useState<string | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Telebirr');
@@ -101,6 +135,18 @@ export function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const toastTimerRef = useRef<number | null>(null);
+  const isAdminUnlockedRef = useRef<boolean>(false);
+  isAdminUnlockedRef.current = isAdminUnlocked;
+
+  const selectedEvent = useMemo(
+    () => (selectedEventId ? events.find((e) => e.id === selectedEventId) || null : null),
+    [events, selectedEventId]
+  );
+
+  const detailModalEvent = useMemo(
+    () => (detailModalEventId ? events.find((e) => e.id === detailModalEventId) || null : null),
+    [events, detailModalEventId]
+  );
 
   const navigate = useCallback((to: string, replace = false) => {
     const normalized = normalizePath(to);
@@ -119,6 +165,111 @@ export function App() {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMessage(null);
+    }, 3400);
+  }, []);
+
+  const fetchServerState = useCallback(async () => {
+    try {
+      const res = await fetch('/api/state');
+      if (!res.ok) return;
+      const data = (await res.json()) as { events?: MatchEvent[]; bookings?: Booking[] };
+      if (Array.isArray(data.events)) setEvents(data.events);
+      if (Array.isArray(data.bookings)) setBookings(data.bookings);
+    } catch (err) {
+      console.warn('Failed to fetch server state:', err);
+    }
+  }, []);
+
+  // Initial state load + WebSocket real-time synchronization
+  useEffect(() => {
+    fetchServerState();
+
+    let ws: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let unmounted = false;
+
+    const connectWs = () => {
+      if (unmounted) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+      ws.onopen = () => {
+        fetchServerState();
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data) as ServerRealtimeMessage;
+          if (msg.type === 'state:sync') {
+            setEvents(msg.events);
+            setBookings(msg.bookings);
+          } else if (msg.type === 'booking:created') {
+            setBookings((prev) =>
+              prev.some((b) => b.id === msg.booking.id) ? prev : [msg.booking, ...prev]
+            );
+
+            if (isAdminUnlockedRef.current && msg.booking.status === 'pending') {
+              playNotificationChime();
+              setLiveAdminAlerts((prev) =>
+                prev.some((a) => a.id === msg.booking.id)
+                  ? prev
+                  : [msg.booking, ...prev].slice(0, 4)
+              );
+
+              if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                try {
+                  new Notification('⚽ New Payment Pending — GGmeets', {
+                    body: `${msg.booking.player_name} sent ${msg.booking.amount} ETB (${msg.booking.payment_method}) for ${msg.booking.match_title}`,
+                  });
+                } catch {
+                  // Ignore browser notification errors
+                }
+              }
+            }
+          } else if (msg.type === 'booking:updated') {
+            setBookings((prev) =>
+              prev.map((b) => (b.id === msg.booking.id ? msg.booking : b))
+            );
+            setLiveAdminAlerts((prev) => prev.filter((a) => a.id !== msg.booking.id));
+          } else if (msg.type === 'event:created') {
+            setEvents((prev) =>
+              prev.some((e) => e.id === msg.event.id) ? prev : [msg.event, ...prev]
+            );
+          } else if (msg.type === 'event:updated') {
+            setEvents((prev) =>
+              prev.map((e) => (e.id === msg.event.id ? msg.event : e))
+            );
+          } else if (msg.type === 'event:deleted') {
+            setEvents((prev) => prev.filter((e) => e.id !== msg.eventId));
+          }
+        } catch (err) {
+          console.warn('WS message parse error:', err);
+        }
+      };
+
+      ws.onclose = () => {
+        if (!unmounted) {
+          reconnectTimer = window.setTimeout(connectWs, 2500);
+        }
+      };
+    };
+
+    connectWs();
+
+    return () => {
+      unmounted = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (ws) ws.close();
+    };
+  }, [fetchServerState]);
 
   const isAdminRoute = pathname === '/admin' || pathname === '/admin/login';
 
@@ -165,36 +316,28 @@ export function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem('gg_events', JSON.stringify(events));
-    } catch (err) {
-      console.warn('Failed to persist events:', err);
-    }
-  }, [events]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('gg_bookings', JSON.stringify(bookings));
-    } catch (err) {
-      console.warn('Failed to persist bookings:', err);
-    }
-  }, [bookings]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('gg_profile', JSON.stringify(userProfile));
     } catch (err) {
       console.warn('Failed to persist profile:', err);
     }
   }, [userProfile]);
 
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    if (toastTimerRef.current) {
-      window.clearTimeout(toastTimerRef.current);
+  const handleRequestBrowserNotifications = async () => {
+    if (typeof Notification === 'undefined') {
+      showToast('Browser notifications are not supported in this window.');
+      return;
     }
-    toastTimerRef.current = window.setTimeout(() => {
-      setToastMessage(null);
-    }, 3200);
+    try {
+      const result = await Notification.requestPermission();
+      setBrowserNotifPermission(result);
+      if (result === 'granted') {
+        showToast('🔔 Desktop & mobile payment alerts enabled!');
+      } else {
+        showToast('Browser notification permission was not granted.');
+      }
+    } catch {
+      showToast('Open /admin/login in a full browser tab to enable OS alerts.');
+    }
   };
 
   const handleSetupAdminPassword = async (password: string): Promise<string | null> => {
@@ -269,6 +412,7 @@ export function App() {
     setStoredAdminToken(null);
     setIsAdminUnlocked(false);
     setChangePasswordOpen(false);
+    setLiveAdminAlerts([]);
     navigate('/admin/login', true);
     showToast('🔒 Admin page locked.');
   };
@@ -308,109 +452,176 @@ export function App() {
       return;
     }
 
-    setIsSubmittingBooking(true);
-
-    const newBookingRecord: Booking = {
-      id: `b-${Date.now()}`,
-      event_id: selectedEvent.id,
-      match_title: selectedEvent.title,
-      match_date: selectedEvent.date,
-      match_time: selectedEvent.time,
-      match_location: selectedEvent.location,
-      player_name: userProfile.name,
-      player_phone: userProfile.phone,
-      amount: selectedEvent.price,
-      payment_method: paymentMethod,
-      status: 'pending',
-      screenshot_url: receiptFilePreview,
-      submitted_at: 'Just now',
-    };
-
-    if (supabase) {
-      try {
-        await supabase.from('bookings').insert([
-          {
-            event_id: selectedEvent.id,
-            player_name: userProfile.name,
-            player_phone: userProfile.phone,
-            payment_method: paymentMethod,
-            screenshot_url: receiptFilePreview,
-            status: 'pending',
-          },
-        ]);
-      } catch (err) {
-        console.warn('Supabase record insert:', err);
-      }
+    const currentCap = getMatchCapacity(selectedEvent, bookings);
+    if (currentCap.isFull) {
+      showToast('🔒 Booking limit reached! This match is now full.');
+      return;
     }
 
-    setBookings((prev) => [newBookingRecord, ...prev]);
-    setIsSubmittingBooking(false);
-    setBookingModalOpen(false);
-    setReceiptFilePreview(null);
-    showToast('⚽ Receipt submitted! Admin will verify your spot.');
-    setCurrentView('my-tickets');
+    setIsSubmittingBooking(true);
+
+    try {
+      const res = await fetch('/api/bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event_id: selectedEvent.id,
+          player_name: userProfile.name,
+          player_phone: userProfile.phone,
+          payment_method: paymentMethod,
+          screenshot_url: receiptFilePreview,
+        }),
+      });
+
+      const data = (await res.json()) as { ok?: boolean; booking?: Booking; error?: string };
+      if (!res.ok || !data.booking) {
+        setIsSubmittingBooking(false);
+        showToast(`⚠️ ${data.error || 'Unable to submit booking.'}`);
+        fetchServerState();
+        return;
+      }
+
+      const createdBooking = data.booking;
+
+      if (supabase) {
+        try {
+          await supabase.from('bookings').insert([
+            {
+              event_id: selectedEvent.id,
+              player_name: userProfile.name,
+              player_phone: userProfile.phone,
+              payment_method: paymentMethod,
+              screenshot_url: receiptFilePreview,
+              status: 'pending',
+            },
+          ]);
+        } catch {
+          // Optional Supabase sync
+        }
+      }
+
+      setBookings((prev) =>
+        prev.some((b) => b.id === createdBooking.id) ? prev : [createdBooking, ...prev]
+      );
+      setIsSubmittingBooking(false);
+      setBookingModalOpen(false);
+      setReceiptFilePreview(null);
+      showToast('⚽ Receipt submitted! Host has been notified to verify your spot.');
+      setCurrentView('my-tickets');
+    } catch {
+      setIsSubmittingBooking(false);
+      showToast('⚠️ Network error while submitting receipt. Please try again.');
+    }
   };
 
   const handleUpdatePaymentStatus = async (
     bookingId: string,
-    eventId: string,
+    _eventId: string,
     newStatus: BookingStatus
   ) => {
-    setBookings((prev) =>
-      prev.map((b) => (b.id === bookingId ? { ...b, status: newStatus } : b))
-    );
+    const token = getStoredAdminToken();
+    try {
+      const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ status: newStatus }),
+      });
 
-    if (newStatus === 'approved') {
-      setEvents((prev) =>
-        prev.map((ev) => {
-          if (ev.id === eventId) {
-            const currentBooked = ev.booked_spots || 0;
-            return { ...ev, booked_spots: Math.min(ev.total_spots, currentBooked + 1) };
-          }
-          return ev;
-        })
-      );
-      showToast('✅ Payment Approved & spot allocated!');
-    } else if (newStatus === 'rejected') {
-      showToast('❌ Payment rejected.');
-    }
-
-    if (supabase) {
-      try {
-        await supabase.from('bookings').update({ status: newStatus }).eq('id', bookingId);
-      } catch (err) {
-        console.warn(err);
+      const data = (await res.json()) as { ok?: boolean; booking?: Booking; error?: string };
+      if (!res.ok || !data.booking) {
+        showToast(`⚠️ ${data.error || 'Could not update payment status.'}`);
+        return;
       }
+
+      setBookings((prev) => prev.map((b) => (b.id === bookingId ? data.booking! : b)));
+      setLiveAdminAlerts((prev) => prev.filter((a) => a.id !== bookingId));
+
+      if (newStatus === 'approved') {
+        showToast('✅ Payment Approved & spot verified!');
+      } else if (newStatus === 'rejected') {
+        showToast('❌ Payment rejected & spot reopened.');
+      }
+
+      if (supabase) {
+        try {
+          await supabase.from('bookings').update({ status: newStatus }).eq('id', bookingId);
+        } catch {
+          // Optional Supabase sync
+        }
+      }
+    } catch {
+      showToast('⚠️ Network error while updating status.');
     }
   };
 
   const handleConfirmDeleteMatch = async () => {
     if (!matchToDelete) return;
     const deletedId = matchToDelete.id;
-    setEvents((prev) => prev.filter((e) => e.id !== deletedId));
-    setMatchToDelete(null);
-    showToast('🗑️ Match listing removed.');
+    const token = getStoredAdminToken();
 
-    if (supabase) {
-      try {
-        await supabase.from('events').delete().eq('id', deletedId);
-      } catch {
-        // Ignore if table schema differs
+    try {
+      const res = await fetch(`/api/events/${encodeURIComponent(deletedId)}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        showToast('⚠️ Failed to delete match.');
+        return;
       }
+      setEvents((prev) => prev.filter((e) => e.id !== deletedId));
+      setMatchToDelete(null);
+      showToast('🗑️ Match listing removed.');
+    } catch {
+      showToast('⚠️ Network error while removing match.');
     }
   };
 
   const handleCreateMatch = async (createdMatch: MatchEvent) => {
-    setEvents((prev) => [createdMatch, ...prev]);
-    showToast('⚽ Match posted!');
-    setAdminTab('games');
-
-    if (supabase) {
-      try {
-        await supabase.from('events').insert([createdMatch]);
-      } catch {
-        // Ignore if table schema differs
+    const token = getStoredAdminToken();
+    try {
+      const res = await fetch('/api/events', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(createdMatch),
+      });
+      const data = (await res.json()) as { ok?: boolean; event?: MatchEvent; error?: string };
+      if (!res.ok || !data.event) {
+        showToast(`⚠️ ${data.error || 'Could not publish match.'}`);
+        return;
       }
+      setEvents((prev) =>
+        prev.some((e) => e.id === data.event!.id) ? prev : [data.event!, ...prev]
+      );
+      showToast('⚽ Match published live!');
+      setAdminTab('games');
+    } catch {
+      showToast('⚠️ Network error while publishing match.');
+    }
+  };
+
+  const handleUpdateMatchLimit = async (eventId: string, newLimit: number) => {
+    const token = getStoredAdminToken();
+    try {
+      const res = await fetch(`/api/events/${encodeURIComponent(eventId)}/limit`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ total_spots: newLimit }),
+      });
+      const data = (await res.json()) as { ok?: boolean; event?: MatchEvent; error?: string };
+      if (res.ok && data.event) {
+        setEvents((prev) => prev.map((e) => (e.id === eventId ? data.event! : e)));
+      }
+    } catch {
+      showToast('⚠️ Failed to update booking limit.');
     }
   };
 
@@ -481,27 +692,94 @@ export function App() {
           </div>
         )}
 
+        {/* Real-time Incoming Payment Pending Popups */}
+        {liveAdminAlerts.length > 0 && (
+          <div className="fixed bottom-5 right-5 z-50 w-full max-w-sm space-y-2 px-4 sm:px-0">
+            {liveAdminAlerts.map((alertItem) => (
+              <div
+                key={alertItem.id}
+                className="bg-[#0E1526] border-2 border-[#00E676] rounded-2xl p-4 shadow-2xl flex items-start gap-3"
+              >
+                <img
+                  src={alertItem.screenshot_url}
+                  alt="Receipt"
+                  className="w-12 h-12 rounded-xl object-cover border border-[#00E676]/50 shrink-0"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-[#00E676]">
+                      🔔 New Payment Pending
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setLiveAdminAlerts((prev) => prev.filter((a) => a.id !== alertItem.id))
+                      }
+                      className="text-slate-400 hover:text-white text-xs font-bold cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <p className="text-xs font-extrabold text-white truncate mt-0.5">
+                    {alertItem.player_name} • {alertItem.amount} ETB ({alertItem.payment_method})
+                  </p>
+                  <p className="text-[11px] text-slate-400 truncate">{alertItem.match_title}</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAdminTab('approvals');
+                      setApprovalFilter('pending');
+                      setLiveAdminAlerts((prev) => prev.filter((a) => a.id !== alertItem.id));
+                    }}
+                    className="mt-2 px-3 py-1 rounded-lg bg-[#00E676] text-black font-extrabold text-[11px] cursor-pointer hover:bg-[#00c965]"
+                  >
+                    Review Now →
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <header className="sticky top-0 z-40 backdrop-blur-xl bg-[#070B13]/90 border-b border-[#162032]">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-2">
             <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#00E676] to-emerald-400 flex items-center justify-center shadow-lg shadow-[#00E676]/20">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#00E676] to-emerald-400 flex items-center justify-center shadow-lg shadow-[#00E676]/20 relative">
                 <span className="text-black font-extrabold text-xl">🛡️</span>
+                {pendingCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-600 text-white text-[10px] font-black flex items-center justify-center animate-pulse">
+                    {pendingCount}
+                  </span>
+                )}
               </div>
               <div className="flex flex-col">
                 <span className="font-extrabold text-xl tracking-tight text-white leading-none">
                   GG<span className="text-[#00E676]">meets</span> Admin
                 </span>
                 <span className="text-[10px] text-[#00E676] font-bold tracking-wider uppercase">
-                  🔓 Unlocked Session
+                  🔓 Live Sync Active
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+              {browserNotifPermission !== 'granted' ? (
+                <button
+                  type="button"
+                  onClick={handleRequestBrowserNotifications}
+                  className="px-3 py-2 rounded-xl bg-[#00E676]/15 hover:bg-[#00E676]/25 text-[#00E676] border border-[#00E676]/30 text-xs font-bold transition cursor-pointer"
+                >
+                  🔔 Enable Alerts
+                </button>
+              ) : (
+                <span className="hidden sm:inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-[#111A2E] border border-[#1E2D4A] text-[11px] font-bold text-[#00E676]">
+                  🔔 Alerts On
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => navigate('/')}
-                className="px-3.5 py-2 rounded-xl bg-[#111A2E] hover:bg-[#16233B] text-slate-300 border border-[#1E2D4A] text-xs font-bold transition cursor-pointer"
+                className="px-3 py-2 rounded-xl bg-[#111A2E] hover:bg-[#16233B] text-slate-300 border border-[#1E2D4A] text-xs font-bold transition cursor-pointer"
               >
                 ← Public Site
               </button>
@@ -509,7 +787,7 @@ export function App() {
                 <button
                   type="button"
                   onClick={() => setChangePasswordOpen(true)}
-                  className="px-3.5 py-2 rounded-xl bg-[#111A2E] hover:bg-[#16233B] text-slate-300 border border-[#1E2D4A] text-xs font-bold transition cursor-pointer"
+                  className="px-3 py-2 rounded-xl bg-[#111A2E] hover:bg-[#16233B] text-slate-300 border border-[#1E2D4A] text-xs font-bold transition cursor-pointer"
                 >
                   🔑 Password
                 </button>
@@ -517,7 +795,7 @@ export function App() {
               <button
                 type="button"
                 onClick={handleLockAdmin}
-                className="px-3.5 py-2 rounded-xl bg-amber-400/15 hover:bg-amber-400/25 text-amber-300 border border-amber-400/30 text-xs font-extrabold transition cursor-pointer"
+                className="px-3 py-2 rounded-xl bg-amber-400/15 hover:bg-amber-400/25 text-amber-300 border border-amber-400/30 text-xs font-extrabold transition cursor-pointer"
               >
                 🔒 Lock Page
               </button>
@@ -531,12 +809,15 @@ export function App() {
           approvalFilter={approvalFilter}
           setApprovalFilter={setApprovalFilter}
           filteredAdminBookings={filteredAdminBookings}
+          allBookings={bookings}
           pendingCount={pendingCount}
           events={events}
           onUpdatePaymentStatus={handleUpdatePaymentStatus}
           onCreateMatch={handleCreateMatch}
+          onUpdateMatchLimit={handleUpdateMatchLimit}
           onRequestDeleteMatch={(match) => setMatchToDelete(match)}
           onViewReceipt={(url) => setViewReceiptModal(url)}
+          onFileUpload={handleFileUpload}
         />
 
         {viewReceiptModal && (
@@ -584,13 +865,14 @@ export function App() {
       {currentView === 'events' && (
         <EventsView
           events={filteredEvents}
+          bookings={bookings}
           activeCategory={activeCategory}
           setActiveCategory={setActiveCategory}
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
-          onOpenDetail={(event) => setDetailModalEvent(event)}
+          onOpenDetail={(event) => setDetailModalEventId(event.id)}
           onOpenBooking={(event) => {
-            setSelectedEvent(event);
+            setSelectedEventId(event.id);
             setReceiptFilePreview(null);
             setBookingModalOpen(true);
           }}
@@ -617,6 +899,7 @@ export function App() {
       {bookingModalOpen && selectedEvent && (
         <BookingModal
           event={selectedEvent}
+          bookings={bookings}
           paymentMethod={paymentMethod}
           setPaymentMethod={setPaymentMethod}
           receiptFilePreview={receiptFilePreview}
@@ -631,10 +914,11 @@ export function App() {
       {detailModalEvent && (
         <DetailModal
           event={detailModalEvent}
-          onClose={() => setDetailModalEvent(null)}
+          bookings={bookings}
+          onClose={() => setDetailModalEventId(null)}
           onJoinGame={(event) => {
-            setSelectedEvent(event);
-            setDetailModalEvent(null);
+            setSelectedEventId(event.id);
+            setDetailModalEventId(null);
             setReceiptFilePreview(null);
             setBookingModalOpen(true);
           }}

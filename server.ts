@@ -1,13 +1,18 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import type { Request, Response } from 'express';
+import { WebSocket, WebSocketServer } from 'ws';
+import { DEFAULT_BOOKINGS, DEFAULT_GAMES } from './src/constants/data.ts';
+import type { Booking, BookingStatus, MatchEvent } from './src/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const AUTH_FILE_PATH = path.join(__dirname, '.admin-auth.json');
+const STORE_FILE_PATH = path.join(__dirname, '.ggmeets-store.json');
 
 interface StoredAdminAuth {
   salt: string;
@@ -15,7 +20,59 @@ interface StoredAdminAuth {
   secret: string;
 }
 
+interface AppDataStore {
+  events: MatchEvent[];
+  bookings: Booking[];
+}
+
 const runtimeFallbackSecret = crypto.randomBytes(32).toString('hex');
+
+function loadAppStore(): AppDataStore {
+  try {
+    if (fs.existsSync(STORE_FILE_PATH)) {
+      const raw = fs.readFileSync(STORE_FILE_PATH, 'utf-8');
+      const parsed = JSON.parse(raw) as Partial<AppDataStore>;
+      if (Array.isArray(parsed.events) && Array.isArray(parsed.bookings)) {
+        return {
+          events: parsed.events,
+          bookings: parsed.bookings,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load store file, using defaults:', err);
+  }
+  const initial: AppDataStore = {
+    events: [...DEFAULT_GAMES],
+    bookings: [...DEFAULT_BOOKINGS],
+  };
+  saveAppStore(initial);
+  return initial;
+}
+
+function saveAppStore(store: AppDataStore) {
+  try {
+    fs.writeFileSync(STORE_FILE_PATH, JSON.stringify(store, null, 2));
+  } catch (err) {
+    console.warn('Failed to persist store:', err);
+  }
+}
+
+function computeSpotsLeft(event: MatchEvent, bookings: Booking[]): number {
+  const totalSpots = Math.max(1, Number(event.total_spots) || 10);
+  const baseBooked = Math.max(0, Number(event.booked_spots) || 0);
+
+  let activeBookingCount = 0;
+  for (const b of bookings) {
+    if (String(b.event_id) !== String(event.id)) continue;
+    if (b.status === 'approved' || b.status === 'pending') {
+      activeBookingCount += 1;
+    }
+  }
+
+  const takenSpots = Math.min(totalSpots, baseBooked + activeBookingCount);
+  return Math.max(0, totalSpots - takenSpots);
+}
 
 function readStoredAuth(): StoredAdminAuth | null {
   try {
@@ -73,7 +130,10 @@ function verifyPassword(candidate: string): boolean {
 function getSigningKey(): string {
   const envPass = getEnvPassword();
   if (envPass !== null) {
-    return crypto.createHash('sha256').update(`env:${envPass}:${runtimeFallbackSecret}`).digest('hex');
+    return crypto
+      .createHash('sha256')
+      .update(`env:${envPass}:${runtimeFallbackSecret}`)
+      .digest('hex');
   }
   const stored = readStoredAuth();
   if (stored) {
@@ -83,7 +143,7 @@ function getSigningKey(): string {
 }
 
 function issueToken(): string {
-  const expiresAt = Date.now() + 12 * 60 * 60 * 1000; // 12 hours
+  const expiresAt = Date.now() + 12 * 60 * 60 * 1000;
   const payload = Buffer.from(JSON.stringify({ exp: expiresAt })).toString('base64url');
   const sig = crypto.createHmac('sha256', getSigningKey()).update(payload).digest('base64url');
   return `${payload}.${sig}`;
@@ -119,9 +179,206 @@ function verifyToken(authHeader: string | undefined): boolean {
 }
 
 async function startServer() {
+  const store = loadAppStore();
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  const httpServer = http.createServer(app);
+  const wss = new WebSocketServer({ noServer: true });
 
+  const broadcast = (message: Record<string, unknown>) => {
+    const serialized = JSON.stringify(message);
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(serialized);
+      }
+    }
+  };
+
+  httpServer.on('upgrade', (req, socket, head) => {
+    const url = req.url || '';
+    if (url === '/ws' || url.startsWith('/ws?')) {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+      });
+    }
+  });
+
+  wss.on('connection', (ws) => {
+    ws.send(
+      JSON.stringify({
+        type: 'state:sync',
+        events: store.events,
+        bookings: store.bookings,
+      })
+    );
+  });
+
+  app.use(express.json({ limit: '15mb' }));
+
+  // Shared state API
+  app.get('/api/state', (_req: Request, res: Response) => {
+    res.json({
+      events: store.events,
+      bookings: store.bookings,
+    });
+  });
+
+  // Public booking submission with strict server-side limit enforcement
+  app.post('/api/bookings', (req: Request, res: Response) => {
+    const body = (req.body || {}) as Partial<Booking>;
+    if (!body.event_id || !body.player_name || !body.screenshot_url) {
+      res.status(400).json({ error: 'Missing required booking details or receipt screenshot.' });
+      return;
+    }
+
+    const targetEvent = store.events.find((ev) => String(ev.id) === String(body.event_id));
+    if (!targetEvent) {
+      res.status(404).json({ error: 'Match not found.' });
+      return;
+    }
+
+    const spotsLeft = computeSpotsLeft(targetEvent, store.bookings);
+    if (spotsLeft <= 0) {
+      res.status(409).json({
+        error: 'Booking limit reached! All spots for this match are filled.',
+      });
+      return;
+    }
+
+    const newBooking: Booking = {
+      id: body.id || `b-${Date.now()}`,
+      event_id: targetEvent.id,
+      match_title: targetEvent.title,
+      match_date: targetEvent.date,
+      match_time: targetEvent.time,
+      match_location: targetEvent.location,
+      player_name: String(body.player_name).trim(),
+      player_phone: String(body.player_phone || '').trim(),
+      amount: targetEvent.price,
+      payment_method: body.payment_method === 'CBE' ? 'CBE' : 'Telebirr',
+      status: 'pending',
+      screenshot_url: String(body.screenshot_url),
+      submitted_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    if (!store.bookings.some((b) => b.id === newBooking.id)) {
+      store.bookings.unshift(newBooking);
+      saveAppStore(store);
+      broadcast({ type: 'booking:created', booking: newBooking });
+    }
+
+    res.status(201).json({ ok: true, booking: newBooking });
+  });
+
+  // Admin: update payment approval/rejection status
+  app.patch('/api/bookings/:id/status', (req: Request, res: Response) => {
+    if (!verifyToken(req.headers.authorization)) {
+      res.status(401).json({ error: 'Unauthorized admin session.' });
+      return;
+    }
+
+    const bookingId = String(req.params.id);
+    const { status } = (req.body || {}) as { status?: BookingStatus };
+    if (status !== 'approved' && status !== 'rejected' && status !== 'pending') {
+      res.status(400).json({ error: 'Invalid booking status.' });
+      return;
+    }
+
+    const booking = store.bookings.find((b) => String(b.id) === bookingId);
+    if (!booking) {
+      res.status(404).json({ error: 'Booking not found.' });
+      return;
+    }
+
+    booking.status = status;
+    saveAppStore(store);
+    broadcast({ type: 'booking:updated', booking });
+    res.json({ ok: true, booking });
+  });
+
+  // Admin: create new match with custom cover photo and booking limit
+  app.post('/api/events', (req: Request, res: Response) => {
+    if (!verifyToken(req.headers.authorization)) {
+      res.status(401).json({ error: 'Unauthorized admin session.' });
+      return;
+    }
+
+    const body = (req.body || {}) as Partial<MatchEvent>;
+    if (!body.title || !body.location) {
+      res.status(400).json({ error: 'Match title and pitch location are required.' });
+      return;
+    }
+
+    const newEvent: MatchEvent = {
+      id: body.id || Date.now().toString(),
+      title: String(body.title).trim(),
+      event_type: String(body.event_type || '5-a-side'),
+      date: String(body.date || 'Today').trim(),
+      time: String(body.time || '5:30 PM - 7:00 PM').trim(),
+      location: String(body.location).trim(),
+      price: Math.max(0, Number(body.price) || 0),
+      total_spots: Math.max(1, Number(body.total_spots) || 10),
+      booked_spots: 0,
+      image_url:
+        body.image_url && String(body.image_url).trim().length > 0
+          ? String(body.image_url).trim()
+          : 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=700',
+      description: String(body.description || 'Friendly pickup game.').trim(),
+      amenities: Array.isArray(body.amenities)
+        ? body.amenities
+        : ['Artificial Turf', 'Bibs Provided', 'Water'],
+    };
+
+    if (!store.events.some((e) => e.id === newEvent.id)) {
+      store.events.unshift(newEvent);
+      saveAppStore(store);
+      broadcast({ type: 'event:created', event: newEvent });
+    }
+
+    res.status(201).json({ ok: true, event: newEvent });
+  });
+
+  // Admin: update match booking limit
+  app.patch('/api/events/:id/limit', (req: Request, res: Response) => {
+    if (!verifyToken(req.headers.authorization)) {
+      res.status(401).json({ error: 'Unauthorized admin session.' });
+      return;
+    }
+
+    const eventId = String(req.params.id);
+    const { total_spots } = (req.body || {}) as { total_spots?: number };
+    const nextLimit = Number(total_spots);
+    if (!Number.isFinite(nextLimit) || nextLimit < 1) {
+      res.status(400).json({ error: 'Booking limit must be at least 1.' });
+      return;
+    }
+
+    const target = store.events.find((e) => String(e.id) === eventId);
+    if (!target) {
+      res.status(404).json({ error: 'Match not found.' });
+      return;
+    }
+
+    target.total_spots = Math.round(nextLimit);
+    saveAppStore(store);
+    broadcast({ type: 'event:updated', event: target });
+    res.json({ ok: true, event: target });
+  });
+
+  // Admin: delete match
+  app.delete('/api/events/:id', (req: Request, res: Response) => {
+    if (!verifyToken(req.headers.authorization)) {
+      res.status(401).json({ error: 'Unauthorized admin session.' });
+      return;
+    }
+
+    const eventId = String(req.params.id);
+    store.events = store.events.filter((e) => String(e.id) !== eventId);
+    saveAppStore(store);
+    broadcast({ type: 'event:deleted', eventId });
+    res.json({ ok: true });
+  });
+
+  // Admin password lock endpoints
   app.get('/api/admin/status', (req: Request, res: Response) => {
     const configured = isPasswordConfigured();
     const envManaged = Boolean(getEnvPassword());
@@ -217,7 +474,7 @@ async function startServer() {
   }
 
   const port = Number(process.env.PORT) || 3000;
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`GGmeets server listening on http://0.0.0.0:${port}`);
   });
 }

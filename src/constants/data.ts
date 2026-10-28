@@ -1,4 +1,4 @@
-import { Booking, MatchEvent, PaymentAccountInfo, PaymentMethod, UserProfile } from '../types';
+import type { Booking, MatchEvent, PaymentAccountInfo, PaymentMethod, UserProfile } from '../types.ts';
 
 export const PAYMENT_INFO: Record<PaymentMethod, PaymentAccountInfo> = {
   Telebirr: {
@@ -25,7 +25,7 @@ export const DEFAULT_GAMES: MatchEvent[] = [
     location: 'Bole Atlas Pitch, Addis Ababa',
     price: 150,
     total_spots: 10,
-    booked_spots: 7,
+    booked_spots: 6,
     image_url: 'https://images.unsplash.com/photo-1529900748604-07564a03e7a6?w=700',
     description:
       'Fast-paced artificial turf game. Bibs and drinking water provided. Bring turf shoes (no metal studs).',

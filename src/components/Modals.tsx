@@ -1,9 +1,12 @@
 import React from 'react';
 import { PAYMENT_INFO } from '../constants/data';
-import { MatchEvent, PaymentMethod } from '../types';
+import { Booking, MatchEvent, PaymentMethod } from '../types';
+import { getMatchCapacity } from '../utils/capacity';
+import { SpotTracker } from './SpotTracker';
 
 interface BookingModalProps {
   event: MatchEvent;
+  bookings: Booking[];
   paymentMethod: PaymentMethod;
   setPaymentMethod: (method: PaymentMethod) => void;
   receiptFilePreview: string | null;
@@ -16,6 +19,7 @@ interface BookingModalProps {
 
 export const BookingModal: React.FC<BookingModalProps> = ({
   event,
+  bookings,
   paymentMethod,
   setPaymentMethod,
   receiptFilePreview,
@@ -26,10 +30,11 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   onClose,
 }) => {
   const paymentMethods: PaymentMethod[] = ['Telebirr', 'CBE'];
+  const capacity = getMatchCapacity(event, bookings);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-      <div className="bg-[#0E1526] border border-[#1A263D] w-full max-w-lg rounded-3xl p-6 sm:p-8 space-y-6 max-h-[90vh] overflow-y-auto shadow-2xl">
+      <div className="bg-[#0E1526] border border-[#1A263D] w-full max-w-lg rounded-3xl p-6 sm:p-8 space-y-5 max-h-[90vh] overflow-y-auto shadow-2xl">
         <div className="flex justify-between items-start border-b border-[#1A263D] pb-4">
           <div>
             <h4 className="font-extrabold text-xl text-white">Confirm Spot Registration</h4>
@@ -46,100 +51,119 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={onSubmit} className="space-y-5">
-          <div className="bg-[#080D1A] p-4 rounded-2xl flex justify-between items-center border border-[#1E2D4A]">
-            <span className="text-xs text-slate-300 font-semibold">Amount to Pay:</span>
-            <span className="text-[#00E676] font-black text-lg">{event.price} ETB</span>
-          </div>
+        <div className="bg-[#080D1A] p-4 rounded-2xl border border-[#1E2D4A]">
+          <SpotTracker capacity={capacity} />
+        </div>
 
-          <div>
-            <label className="text-xs font-bold uppercase text-slate-400 block mb-2">
-              Choose Mobile Banking
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              {paymentMethods.map((m) => (
-                <button
-                  type="button"
-                  key={m}
-                  onClick={() => setPaymentMethod(m)}
-                  className={`py-3 rounded-2xl text-xs font-extrabold border transition cursor-pointer ${
-                    paymentMethod === m
-                      ? 'bg-[#00E676]/20 border-[#00E676] text-[#00E676]'
-                      : 'bg-[#111A2E] border-[#1E2D4A] text-slate-400 hover:text-white'
-                  }`}
-                >
-                  {m === 'Telebirr' ? '📱 Telebirr' : '🏦 CBE / CBE Birr'}
-                </button>
-              ))}
+        {capacity.isFull ? (
+          <div className="p-5 rounded-2xl bg-red-500/15 border border-red-500/30 text-center space-y-2">
+            <p className="text-sm font-extrabold text-red-400">
+              🔒 Booking Limit Reached ({capacity.totalSpots}/{capacity.totalSpots})
+            </p>
+            <p className="text-xs text-slate-300">
+              All spots for this match have been filled and new bookings are closed.
+            </p>
+            <button
+              type="button"
+              onClick={onClose}
+              className="mt-2 px-5 py-2.5 rounded-xl bg-[#111A2E] text-white text-xs font-bold border border-[#1E2D4A] cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={onSubmit} className="space-y-5">
+            <div className="bg-[#080D1A] p-4 rounded-2xl flex justify-between items-center border border-[#1E2D4A]">
+              <span className="text-xs text-slate-300 font-semibold">Amount to Pay:</span>
+              <span className="text-[#00E676] font-black text-lg">{event.price} ETB</span>
             </div>
 
-            <div className="p-4 rounded-2xl bg-[#111A2E] border border-[#1E2D4A] mt-3 space-y-2">
-              <div className="flex justify-between items-center">
-                <div>
-                  <p className="text-[10px] uppercase font-bold text-slate-400">Transfer To:</p>
-                  <p className="font-mono text-white text-base font-bold">
-                    {PAYMENT_INFO[paymentMethod].displayName}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onCopyText(PAYMENT_INFO[paymentMethod].accountNumber, paymentMethod)}
-                  className="px-3 py-1.5 bg-[#00E676] hover:bg-[#00c965] text-black font-extrabold text-xs rounded-xl transition cursor-pointer"
-                >
-                  Copy Number
-                </button>
+            <div>
+              <label className="text-xs font-bold uppercase text-slate-400 block mb-2">
+                Choose Mobile Banking
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                {paymentMethods.map((m) => (
+                  <button
+                    type="button"
+                    key={m}
+                    onClick={() => setPaymentMethod(m)}
+                    className={`py-3 rounded-2xl text-xs font-extrabold border transition cursor-pointer ${
+                      paymentMethod === m
+                        ? 'bg-[#00E676]/20 border-[#00E676] text-[#00E676]'
+                        : 'bg-[#111A2E] border-[#1E2D4A] text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {m === 'Telebirr' ? '📱 Telebirr' : '🏦 CBE / CBE Birr'}
+                  </button>
+                ))}
               </div>
-              <p className="text-[11px] text-slate-400 pt-1 border-t border-[#1E2D4A]/60">
-                Account Holder:{' '}
-                <strong className="text-slate-200">{PAYMENT_INFO[paymentMethod].receiver}</strong>
-              </p>
-              <p className="text-[11px] text-slate-400">{PAYMENT_INFO[paymentMethod].note}</p>
-            </div>
-          </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase text-slate-400 block">
-              Upload Transfer Screenshot (Required)
-            </label>
-            <label className="border-2 border-dashed border-[#1E2D4A] hover:border-[#00E676] rounded-2xl p-5 flex flex-col items-center justify-center cursor-pointer transition bg-[#080D1A]">
-              {receiptFilePreview ? (
-                <div className="flex items-center gap-3">
-                  <img
-                    src={receiptFilePreview}
-                    alt="Receipt Preview"
-                    className="w-14 h-14 object-cover rounded-xl border border-[#00E676]"
-                  />
-                  <div className="text-left">
-                    <p className="text-xs text-[#00E676] font-bold">Screenshot Attached ✓</p>
-                    <p className="text-[10px] text-slate-400">Click to change</p>
+              <div className="p-4 rounded-2xl bg-[#111A2E] border border-[#1E2D4A] mt-3 space-y-2">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <p className="text-[10px] uppercase font-bold text-slate-400">Transfer To:</p>
+                    <p className="font-mono text-white text-base font-bold">
+                      {PAYMENT_INFO[paymentMethod].displayName}
+                    </p>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onCopyText(PAYMENT_INFO[paymentMethod].accountNumber, paymentMethod)
+                    }
+                    className="px-3 py-1.5 bg-[#00E676] hover:bg-[#00c965] text-black font-extrabold text-xs rounded-xl transition cursor-pointer"
+                  >
+                    Copy Number
+                  </button>
                 </div>
-              ) : (
-                <>
-                  <span className="text-3xl mb-1">📤</span>
-                  <span className="text-xs font-bold text-slate-200">
-                    Tap to select receipt photo
-                  </span>
-                  <span className="text-[10px] text-slate-500">JPG or PNG screenshot</span>
-                </>
-              )}
-              <input
-                type="file"
-                accept="image/*"
-                onChange={onFileUpload}
-                className="hidden"
-              />
-            </label>
-          </div>
+                <p className="text-[11px] text-slate-400 pt-1 border-t border-[#1E2D4A]/60">
+                  Account Holder:{' '}
+                  <strong className="text-slate-200">{PAYMENT_INFO[paymentMethod].receiver}</strong>
+                </p>
+                <p className="text-[11px] text-slate-400">{PAYMENT_INFO[paymentMethod].note}</p>
+              </div>
+            </div>
 
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="w-full py-4 rounded-2xl bg-[#00E676] text-black font-extrabold text-xs uppercase hover:bg-[#00c965] shadow-xl shadow-[#00E676]/25 transition cursor-pointer disabled:opacity-60"
-          >
-            {isSubmitting ? 'Submitting...' : 'Send Receipt & Confirm Spot'}
-          </button>
-        </form>
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase text-slate-400 block">
+                Upload Transfer Screenshot (Required)
+              </label>
+              <label className="border-2 border-dashed border-[#1E2D4A] hover:border-[#00E676] rounded-2xl p-5 flex flex-col items-center justify-center cursor-pointer transition bg-[#080D1A]">
+                {receiptFilePreview ? (
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={receiptFilePreview}
+                      alt="Receipt Preview"
+                      className="w-14 h-14 object-cover rounded-xl border border-[#00E676]"
+                    />
+                    <div className="text-left">
+                      <p className="text-xs text-[#00E676] font-bold">Screenshot Attached ✓</p>
+                      <p className="text-[10px] text-slate-400">Click to change</p>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <span className="text-3xl mb-1">📤</span>
+                    <span className="text-xs font-bold text-slate-200">
+                      Tap to select receipt photo
+                    </span>
+                    <span className="text-[10px] text-slate-500">JPG or PNG screenshot</span>
+                  </>
+                )}
+                <input type="file" accept="image/*" onChange={onFileUpload} className="hidden" />
+              </label>
+            </div>
+
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full py-4 rounded-2xl bg-[#00E676] text-black font-extrabold text-xs uppercase hover:bg-[#00c965] shadow-xl shadow-[#00E676]/25 transition cursor-pointer disabled:opacity-60"
+            >
+              {isSubmitting ? 'Submitting...' : 'Send Receipt & Confirm Spot'}
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );
@@ -147,13 +171,18 @@ export const BookingModal: React.FC<BookingModalProps> = ({
 
 interface DetailModalProps {
   event: MatchEvent;
+  bookings: Booking[];
   onClose: () => void;
   onJoinGame: (event: MatchEvent) => void;
 }
 
-export const DetailModal: React.FC<DetailModalProps> = ({ event, onClose, onJoinGame }) => {
-  const spotsLeft = (event.total_spots || 10) - (event.booked_spots || 0);
-  const isFull = spotsLeft <= 0;
+export const DetailModal: React.FC<DetailModalProps> = ({
+  event,
+  bookings,
+  onClose,
+  onJoinGame,
+}) => {
+  const capacity = getMatchCapacity(event, bookings);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
@@ -192,21 +221,28 @@ export const DetailModal: React.FC<DetailModalProps> = ({ event, onClose, onJoin
               ))}
             </div>
           )}
+
+          <div className="p-3.5 rounded-2xl bg-[#080D1A] border border-[#1E2D4A]">
+            <SpotTracker capacity={capacity} />
+          </div>
+
           <div className="flex items-center justify-between pt-4 border-t border-[#1E2D4A]">
             <div>
               <span className="text-slate-400 text-xs block">Fee per Player</span>
               <span className="text-2xl font-black text-white">{event.price} ETB</span>
             </div>
             <button
-              onClick={() => onJoinGame(event)}
-              disabled={isFull}
+              onClick={() => {
+                if (!capacity.isFull) onJoinGame(event);
+              }}
+              disabled={capacity.isFull}
               className={`px-6 py-3 rounded-xl font-extrabold text-xs uppercase transition ${
-                isFull
-                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                capacity.isFull
+                  ? 'bg-red-500/15 text-red-400 border border-red-500/30 cursor-not-allowed'
                   : 'bg-[#00E676] text-black hover:bg-[#00c965] cursor-pointer'
               }`}
             >
-              {isFull ? 'Sold Out' : 'Join Game'}
+              {capacity.isFull ? '🔒 Limit Reached' : 'Join Game'}
             </button>
           </div>
         </div>

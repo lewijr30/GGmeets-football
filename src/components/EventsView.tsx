@@ -1,8 +1,11 @@
 import React from 'react';
-import { EventCategory, MatchEvent } from '../types';
+import { Booking, EventCategory, MatchEvent } from '../types';
+import { getMatchCapacity } from '../utils/capacity';
+import { SpotTracker } from './SpotTracker';
 
 interface EventsViewProps {
   events: MatchEvent[];
+  bookings: Booking[];
   activeCategory: EventCategory;
   setActiveCategory: (category: EventCategory) => void;
   searchQuery: string;
@@ -15,6 +18,7 @@ const CATEGORIES: EventCategory[] = ['All', '5-a-side', '7-a-side', 'Full Field'
 
 export const EventsView: React.FC<EventsViewProps> = ({
   events,
+  bookings,
   activeCategory,
   setActiveCategory,
   searchQuery,
@@ -71,12 +75,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {events.map((event) => {
-            const spotsLeft = (event.total_spots || 10) - (event.booked_spots || 0);
-            const isFull = spotsLeft <= 0;
-            const percentFilled = Math.min(
-              100,
-              Math.max(0, Math.round(((event.booked_spots || 0) / (event.total_spots || 1)) * 100))
-            );
+            const capacity = getMatchCapacity(event, bookings);
 
             return (
               <div
@@ -91,7 +90,9 @@ export const EventsView: React.FC<EventsViewProps> = ({
                     <img
                       src={event.image_url}
                       alt={event.title}
-                      className="w-full h-full object-cover group-hover:scale-105 transition duration-500"
+                      className={`w-full h-full object-cover group-hover:scale-105 transition duration-500 ${
+                        capacity.isFull ? 'grayscale-[40%] opacity-80' : ''
+                      }`}
                     />
                     <div className="absolute top-3 left-3 bg-[#0B101D]/90 backdrop-blur-md px-3 py-1 rounded-full text-xs font-bold text-[#00E676] border border-[#00E676]/20">
                       {event.event_type}
@@ -99,6 +100,11 @@ export const EventsView: React.FC<EventsViewProps> = ({
                     <div className="absolute top-3 right-3 bg-black/85 backdrop-blur-md px-3 py-1 rounded-full text-xs font-black text-white border border-white/10">
                       {event.price} ETB
                     </div>
+                    {capacity.isFull && (
+                      <div className="absolute bottom-3 right-3 bg-red-600/95 backdrop-blur-md px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider text-white shadow-lg">
+                        Limit Reached
+                      </div>
+                    )}
                   </div>
 
                   <div className="p-6 space-y-3">
@@ -118,30 +124,7 @@ export const EventsView: React.FC<EventsViewProps> = ({
                       <p className="truncate">📍 {event.location}</p>
                     </div>
                     <div className="pt-2">
-                      <div className="flex justify-between items-center text-xs mb-1.5">
-                        <span className={`font-bold ${isFull ? 'text-red-400' : 'text-[#00E676]'}`}>
-                          {isFull ? 'Sold Out' : `${spotsLeft} spots available`}
-                        </span>
-                        <span className="text-slate-400 font-mono text-[11px]">
-                          {event.booked_spots || 0}/{event.total_spots} players
-                        </span>
-                      </div>
-                      <svg
-                        className="w-full h-2 rounded-full bg-[#162032] overflow-hidden block"
-                        viewBox="0 0 100 8"
-                        preserveAspectRatio="none"
-                      >
-                        <rect
-                          x="0"
-                          y="0"
-                          width={percentFilled}
-                          height="8"
-                          rx="4"
-                          className={`transition-all duration-500 ${
-                            isFull ? 'fill-red-500' : 'fill-[#00E676]'
-                          }`}
-                        />
-                      </svg>
+                      <SpotTracker capacity={capacity} />
                     </div>
                   </div>
                 </div>
@@ -154,15 +137,17 @@ export const EventsView: React.FC<EventsViewProps> = ({
                     ℹ️
                   </button>
                   <button
-                    onClick={() => onOpenBooking(event)}
-                    disabled={isFull}
+                    onClick={() => {
+                      if (!capacity.isFull) onOpenBooking(event);
+                    }}
+                    disabled={capacity.isFull}
                     className={`flex-1 py-3 rounded-xl font-extrabold text-xs uppercase tracking-wider transition ${
-                      isFull
-                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                      capacity.isFull
+                        ? 'bg-red-500/15 text-red-400 border border-red-500/30 cursor-not-allowed'
                         : 'bg-[#00E676] text-black hover:bg-[#00c965] shadow-lg shadow-[#00E676]/20 cursor-pointer'
                     }`}
                   >
-                    {isFull ? 'Sold Out' : 'Join Game Now'}
+                    {capacity.isFull ? '🔒 Booking Closed (Full)' : 'Join Game Now'}
                   </button>
                 </div>
               </div>
