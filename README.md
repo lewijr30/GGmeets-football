@@ -7,7 +7,7 @@ A React + TypeScript + Vite web application for discovering, booking, and managi
 - **Match Discovery & Filtering**: Browse upcoming 5-a-side, 7-a-side, and Full Field (11v11) matches with real-time spot availability and location/pitch search.
 - **Mobile Banking Spot Registration**: Pay via **Telebirr** or **CBE / CBE Birr**, one-tap copy account numbers, and upload transfer receipt screenshots for verification.
 - **Digital Match Passes**: Track registration status (`Verified Pass`, `Admin Verification Pending`, `Payment Rejected`) and inspect submitted payment receipts.
-- **Host Admin Portal (`/admin/login`)**: Protected host login (via Supabase Auth or configured admin env credentials) to review player transfer receipts, approve/reject bookings, publish new pickup matches, and remove match listings.
+- **Password-Locked Host Admin (`/admin/login`)**: Server-side password lock (`scrypt` hashed or set via `ADMIN_PASSWORD`) protecting payment receipt verification, match publishing, and match management.
 - **Player Profile**: Customize player name, phone number, preferred pitch position, Addis Ababa subcity, and avatar photo.
 
 ## Getting Started

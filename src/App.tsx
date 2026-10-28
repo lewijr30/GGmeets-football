@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AdminLoginView } from './components/AdminLoginView';
 import { AdminView } from './components/AdminView';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { EventsView } from './components/EventsView';
 import { HomeView } from './components/HomeView';
 import {
@@ -26,12 +27,34 @@ import {
   UserProfile,
 } from './types';
 
+const ADMIN_TOKEN_STORAGE_KEY = 'gg_admin_lock_token';
+
 function loadFromStorage<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     return fallback;
+  }
+}
+
+function getStoredAdminToken(): string | null {
+  try {
+    return sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setStoredAdminToken(token: string | null) {
+  try {
+    if (token) {
+      sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+    } else {
+      sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage errors
   }
 }
 
@@ -48,14 +71,11 @@ export function App() {
   const [adminTab, setAdminTab] = useState<AdminTab>('approvals');
   const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>('all');
 
-  const [adminEmail, setAdminEmail] = useState<string | null>(() => {
-    try {
-      return sessionStorage.getItem('gg_admin_email');
-    } catch {
-      return null;
-    }
-  });
-  const [isCheckingAuth, setIsCheckingAuth] = useState<boolean>(true);
+  const [isPasswordConfigured, setIsPasswordConfigured] = useState<boolean>(true);
+  const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(false);
+  const [isEnvManagedPassword, setIsEnvManagedPassword] = useState<boolean>(false);
+  const [isCheckingLock, setIsCheckingLock] = useState<boolean>(true);
+  const [changePasswordOpen, setChangePasswordOpen] = useState<boolean>(false);
 
   const [events, setEvents] = useState<MatchEvent[]>(() =>
     loadFromStorage('gg_events', DEFAULT_GAMES)
@@ -100,95 +120,48 @@ export function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
+  const isAdminRoute = pathname === '/admin' || pathname === '/admin/login';
+
   useEffect(() => {
-    if (!supabase) {
-      setIsCheckingAuth(false);
-      return;
-    }
+    if (!isAdminRoute) return;
 
-    let mounted = true;
+    let active = true;
+    setIsCheckingLock(true);
 
-    supabase.auth
-      .getSession()
-      .then(({ data }) => {
-        if (!mounted) return;
-        if (data.session?.user?.email) {
-          setAdminEmail(data.session.user.email);
-        }
-        setIsCheckingAuth(false);
-      })
-      .catch(() => {
-        if (mounted) setIsCheckingAuth(false);
-      });
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!mounted) return;
-      if (session?.user?.email) {
-        setAdminEmail(session.user.email);
-      } else {
-        try {
-          if (!sessionStorage.getItem('gg_admin_email')) {
-            setAdminEmail(null);
+    const token = getStoredAdminToken();
+    fetch('/api/admin/status', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((res) => res.json())
+      .then(
+        (data: { configured?: boolean; unlocked?: boolean; envManaged?: boolean }) => {
+          if (!active) return;
+          setIsPasswordConfigured(Boolean(data.configured));
+          setIsAdminUnlocked(Boolean(data.unlocked));
+          setIsEnvManagedPassword(Boolean(data.envManaged));
+          if (!data.unlocked) {
+            setStoredAdminToken(null);
           }
-        } catch {
-          setAdminEmail(null);
+          setIsCheckingLock(false);
         }
-      }
-    });
+      )
+      .catch(() => {
+        if (!active) return;
+        setIsAdminUnlocked(false);
+        setIsCheckingLock(false);
+      });
 
     return () => {
-      mounted = false;
-      listener.subscription.unsubscribe();
+      active = false;
     };
-  }, []);
-
-  const isAdminRoute = pathname === '/admin' || pathname === '/admin/login';
-  const isAdminAuthenticated = Boolean(adminEmail);
+  }, [isAdminRoute]);
 
   useEffect(() => {
-    if (isCheckingAuth) return;
-    if (pathname === '/admin' && !isAdminAuthenticated) {
+    if (isCheckingLock) return;
+    if (pathname === '/admin' && !isAdminUnlocked) {
       navigate('/admin/login', true);
     }
-  }, [isCheckingAuth, pathname, isAdminAuthenticated, navigate]);
-
-  useEffect(() => {
-    if (!isAdminAuthenticated || !supabase) return;
-    supabase
-      .from('bookings')
-      .select('*')
-      .then(({ data }) => {
-        if (!data || data.length === 0) return;
-        setBookings((prev) => {
-          const existingIds = new Set(prev.map((b) => String(b.id)));
-          const mappedRemote: Booking[] = (data as Record<string, unknown>[])
-            .filter((row) => !existingIds.has(String(row.id)))
-            .map((row) => {
-              const matchedEv = events.find((ev) => String(ev.id) === String(row.event_id));
-              return {
-                id: String(row.id),
-                event_id: String(row.event_id ?? ''),
-                match_title: String(row.match_title ?? matchedEv?.title ?? 'Pickup Match'),
-                match_date: row.match_date ? String(row.match_date) : matchedEv?.date,
-                match_time: row.match_time ? String(row.match_time) : matchedEv?.time,
-                match_location: row.match_location
-                  ? String(row.match_location)
-                  : matchedEv?.location,
-                player_name: String(row.player_name ?? 'Player'),
-                player_phone: String(row.player_phone ?? ''),
-                amount: Number(row.amount ?? matchedEv?.price ?? 0),
-                payment_method: (row.payment_method === 'CBE' ? 'CBE' : 'Telebirr') as PaymentMethod,
-                status: (['pending', 'approved', 'rejected'].includes(String(row.status))
-                  ? row.status
-                  : 'pending') as BookingStatus,
-                screenshot_url: String(row.screenshot_url ?? ''),
-                submitted_at: String(row.submitted_at ?? row.created_at ?? 'Submitted'),
-              };
-            });
-          return mappedRemote.length > 0 ? [...mappedRemote, ...prev] : prev;
-        });
-      });
-  }, [isAdminAuthenticated, events]);
+  }, [isCheckingLock, pathname, isAdminUnlocked, navigate]);
 
   useEffect(() => {
     try {
@@ -224,60 +197,80 @@ export function App() {
     }, 3200);
   };
 
-  const handleAdminLogin = async (email: string, password: string): Promise<string | null> => {
-    const envEmail = import.meta.env.VITE_ADMIN_EMAIL;
-    const envPassword = import.meta.env.VITE_ADMIN_PASSWORD;
-
-    if (envEmail && envPassword && email.toLowerCase() === envEmail.toLowerCase() && password === envPassword) {
-      try {
-        sessionStorage.setItem('gg_admin_email', email);
-      } catch {
-        // Ignore sessionStorage errors
+  const handleSetupAdminPassword = async (password: string): Promise<string | null> => {
+    try {
+      const res = await fetch('/api/admin/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const data = (await res.json()) as { ok?: boolean; token?: string; error?: string };
+      if (!res.ok || !data.token) {
+        return data.error || 'Could not configure admin password.';
       }
-      setAdminEmail(email);
-      showToast('🛡️ Signed in to Host Admin!');
+      setStoredAdminToken(data.token);
+      setIsPasswordConfigured(true);
+      setIsAdminUnlocked(true);
+      showToast('🔒 Admin password set & page unlocked!');
       return null;
+    } catch {
+      return 'Unable to reach server. Please try again.';
     }
-
-    if (supabase) {
-      try {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (!error && data.session?.user) {
-          const signedInEmail = data.session.user.email || email;
-          setAdminEmail(signedInEmail);
-          showToast('🛡️ Signed in to Host Admin!');
-          return null;
-        }
-        if (error) {
-          return error.message;
-        }
-      } catch {
-        return 'Unable to reach authentication server. Please try again.';
-      }
-    }
-
-    return 'Invalid admin email or password.';
   };
 
-  const handleAdminLogout = async () => {
+  const handleUnlockAdmin = async (password: string): Promise<string | null> => {
     try {
-      sessionStorage.removeItem('gg_admin_email');
-    } catch {
-      // Ignore sessionStorage errors
-    }
-    if (supabase) {
-      try {
-        await supabase.auth.signOut();
-      } catch {
-        // Ignore signOut errors
+      const res = await fetch('/api/admin/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const data = (await res.json()) as { ok?: boolean; token?: string; error?: string };
+      if (!res.ok || !data.token) {
+        return data.error || 'Incorrect password.';
       }
+      setStoredAdminToken(data.token);
+      setIsAdminUnlocked(true);
+      showToast('🔓 Host Admin unlocked!');
+      return null;
+    } catch {
+      return 'Unable to verify password right now.';
     }
-    setAdminEmail(null);
+  };
+
+  const handleChangeAdminPassword = async (
+    currentPassword: string,
+    newPassword: string
+  ): Promise<string | null> => {
+    try {
+      const token = getStoredAdminToken();
+      const res = await fetch('/api/admin/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const data = (await res.json()) as { ok?: boolean; token?: string; error?: string };
+      if (!res.ok || !data.token) {
+        return data.error || 'Failed to update password.';
+      }
+      setStoredAdminToken(data.token);
+      setChangePasswordOpen(false);
+      showToast('🔑 Admin password updated!');
+      return null;
+    } catch {
+      return 'Unable to update password right now.';
+    }
+  };
+
+  const handleLockAdmin = () => {
+    setStoredAdminToken(null);
+    setIsAdminUnlocked(false);
+    setChangePasswordOpen(false);
     navigate('/admin/login', true);
-    showToast('Signed out of Host Admin.');
+    showToast('🔒 Admin page locked.');
   };
 
   const handleCopyText = (text: string, label: string) => {
@@ -452,17 +445,17 @@ export function App() {
     [bookings]
   );
 
-  // Dedicated /admin/login & /admin route handling
+  // Dedicated password-locked /admin/login & /admin route handling
   if (isAdminRoute) {
-    if (isCheckingAuth) {
+    if (isCheckingLock) {
       return (
         <div className="min-h-screen bg-[#070B13] flex items-center justify-center text-slate-400 text-xs font-bold">
-          Loading Admin Portal...
+          Checking Admin Lock...
         </div>
       );
     }
 
-    if (!isAdminAuthenticated) {
+    if (!isAdminUnlocked) {
       return (
         <>
           {toastMessage && (
@@ -471,7 +464,9 @@ export function App() {
             </div>
           )}
           <AdminLoginView
-            onLogin={handleAdminLogin}
+            isConfigured={isPasswordConfigured}
+            onUnlock={handleUnlockAdmin}
+            onSetupPassword={handleSetupAdminPassword}
             onNavigateHome={() => navigate('/')}
           />
         </>
@@ -496,13 +491,13 @@ export function App() {
                 <span className="font-extrabold text-xl tracking-tight text-white leading-none">
                   GG<span className="text-[#00E676]">meets</span> Admin
                 </span>
-                <span className="text-[10px] text-slate-400 font-semibold tracking-wider truncate max-w-[180px] sm:max-w-none">
-                  {adminEmail}
+                <span className="text-[10px] text-[#00E676] font-bold tracking-wider uppercase">
+                  🔓 Unlocked Session
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => navigate('/')}
@@ -510,12 +505,21 @@ export function App() {
               >
                 ← Public Site
               </button>
+              {!isEnvManagedPassword && (
+                <button
+                  type="button"
+                  onClick={() => setChangePasswordOpen(true)}
+                  className="px-3.5 py-2 rounded-xl bg-[#111A2E] hover:bg-[#16233B] text-slate-300 border border-[#1E2D4A] text-xs font-bold transition cursor-pointer"
+                >
+                  🔑 Password
+                </button>
+              )}
               <button
                 type="button"
-                onClick={handleAdminLogout}
-                className="px-3.5 py-2 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-400 border border-red-500/30 text-xs font-bold transition cursor-pointer"
+                onClick={handleLockAdmin}
+                className="px-3.5 py-2 rounded-xl bg-amber-400/15 hover:bg-amber-400/25 text-amber-300 border border-amber-400/30 text-xs font-extrabold transition cursor-pointer"
               >
-                Sign Out
+                🔒 Lock Page
               </button>
             </div>
           </div>
@@ -547,6 +551,13 @@ export function App() {
             event={matchToDelete}
             onConfirm={handleConfirmDeleteMatch}
             onCancel={() => setMatchToDelete(null)}
+          />
+        )}
+
+        {changePasswordOpen && (
+          <ChangePasswordModal
+            onSubmit={handleChangeAdminPassword}
+            onClose={() => setChangePasswordOpen(false)}
           />
         )}
       </div>

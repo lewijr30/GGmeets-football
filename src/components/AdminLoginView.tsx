@@ -1,16 +1,20 @@
 import React, { useState } from 'react';
 
 interface AdminLoginViewProps {
-  onLogin: (email: string, password: string) => Promise<string | null>;
+  isConfigured: boolean;
+  onUnlock: (password: string) => Promise<string | null>;
+  onSetupPassword: (password: string) => Promise<string | null>;
   onNavigateHome: () => void;
 }
 
 export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
-  onLogin,
+  isConfigured,
+  onUnlock,
+  onSetupPassword,
   onNavigateHome,
 }) => {
-  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -18,11 +22,31 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+
+    if (!isConfigured) {
+      if (password.trim().length < 4) {
+        setErrorMessage('Password must be at least 4 characters.');
+        return;
+      }
+      if (password !== confirmPassword) {
+        setErrorMessage('Passwords do not match.');
+        return;
+      }
+      setIsSubmitting(true);
+      const err = await onSetupPassword(password);
+      setIsSubmitting(false);
+      if (err) {
+        setErrorMessage(err);
+      }
+      return;
+    }
+
     setIsSubmitting(true);
-    const err = await onLogin(email.trim(), password);
+    const err = await onUnlock(password);
     setIsSubmitting(false);
     if (err) {
       setErrorMessage(err);
+      setPassword('');
     }
   };
 
@@ -42,7 +66,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
                 GG<span className="text-[#00E676]">meets</span>
               </span>
               <span className="text-[10px] text-slate-400 font-semibold tracking-wider uppercase">
-                Host Admin Portal
+                Host Admin Lock
               </span>
             </div>
           </div>
@@ -61,17 +85,20 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
         <div className="w-full max-w-md bg-[#0E1526] border border-[#1A263D] rounded-3xl p-7 sm:p-8 shadow-2xl space-y-6">
           <div className="text-center space-y-2">
             <div className="w-14 h-14 mx-auto rounded-2xl bg-[#00E676]/15 border border-[#00E676]/30 flex items-center justify-center text-2xl">
-              🛡️
+              {isConfigured ? '🔒' : '🔐'}
             </div>
-            <h1 className="text-2xl font-extrabold text-white">Host Admin Login</h1>
+            <h1 className="text-2xl font-extrabold text-white">
+              {isConfigured ? 'Admin Page Locked' : 'Set Admin Password'}
+            </h1>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Sign in with your authorized host credentials to verify Telebirr &amp; CBE transfers
-              and manage pickup matches.
+              {isConfigured
+                ? 'Enter the Host Admin password to unlock payment verification and match management.'
+                : 'Choose a password to lock the Host Admin page. Visitors will be required to enter this password at /admin/login.'}
             </p>
           </div>
 
           {errorMessage && (
-            <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs font-semibold">
+            <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs font-semibold text-center">
               {errorMessage}
             </div>
           )}
@@ -79,49 +106,56 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="text-xs font-bold uppercase text-slate-400 block mb-1.5">
-                Admin Email
-              </label>
-              <input
-                type="email"
-                required
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="host@ggmeets.com"
-                className="w-full px-4 py-3 rounded-xl bg-[#090D18] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs font-bold uppercase text-slate-400 block mb-1.5">
-                Password
+                {isConfigured ? 'Admin Password' : 'New Admin Password'}
               </label>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
                   required
-                  autoComplete="current-password"
+                  autoFocus
+                  autoComplete={isConfigured ? 'current-password' : 'new-password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter your password"
-                  className="w-full pl-4 pr-16 py-3 rounded-xl bg-[#090D18] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
+                  placeholder={isConfigured ? 'Enter password to unlock' : 'At least 4 characters'}
+                  className="w-full pl-4 pr-16 py-3.5 rounded-xl bg-[#090D18] border border-[#1E2D4A] text-white text-sm focus:border-[#00E676] focus:outline-none"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword((prev) => !prev)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400 hover:text-white cursor-pointer"
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400 hover:text-white cursor-pointer"
                 >
                   {showPassword ? 'Hide' : 'Show'}
                 </button>
               </div>
             </div>
 
+            {!isConfigured && (
+              <div>
+                <label className="text-xs font-bold uppercase text-slate-400 block mb-1.5">
+                  Confirm Password
+                </label>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Re-enter password"
+                  className="w-full px-4 py-3.5 rounded-xl bg-[#090D18] border border-[#1E2D4A] text-white text-sm focus:border-[#00E676] focus:outline-none"
+                />
+              </div>
+            )}
+
             <button
               type="submit"
               disabled={isSubmitting}
               className="w-full py-3.5 mt-2 rounded-2xl bg-[#00E676] text-black font-extrabold text-xs uppercase tracking-wider hover:bg-[#00c965] shadow-xl shadow-[#00E676]/20 transition cursor-pointer disabled:opacity-60"
             >
-              {isSubmitting ? 'Signing In...' : 'Sign In to Host Admin'}
+              {isSubmitting
+                ? 'Verifying...'
+                : isConfigured
+                  ? 'Unlock Admin Page'
+                  : 'Save Password & Lock Admin'}
             </button>
           </form>
         </div>
