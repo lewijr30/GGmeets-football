@@ -1,0 +1,98 @@
+import React from 'react';
+import { AppView, Booking, MatchEvent } from '../types';
+
+interface MyPassesViewProps {
+  bookings: Booking[];
+  events: MatchEvent[];
+  setCurrentView: (view: AppView) => void;
+  onViewReceipt: (url: string) => void;
+}
+
+export const MyPassesView: React.FC<MyPassesViewProps> = ({
+  bookings,
+  events,
+  setCurrentView,
+  onViewReceipt,
+}) => {
+  return (
+    <main className="flex-1 max-w-4xl mx-auto px-4 sm:px-6 py-10 w-full">
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h2 className="text-3xl font-extrabold text-white">My Match Passes</h2>
+          <p className="text-slate-400 text-sm mt-1">Show your digital pass at the pitch gate.</p>
+        </div>
+        <button
+          onClick={() => setCurrentView('events')}
+          className="px-4 py-2 bg-[#111A2E] hover:bg-[#16233B] text-slate-300 border border-[#1E2D4A] rounded-xl text-xs font-bold cursor-pointer"
+        >
+          + Join Another
+        </button>
+      </div>
+
+      {bookings.length === 0 ? (
+        <div className="p-12 text-center bg-[#0E1526] rounded-3xl border border-[#1A263D] space-y-4">
+          <div className="text-5xl">🎟️</div>
+          <h3 className="text-xl font-bold text-white">No Match Passes Yet</h3>
+          <p className="text-slate-400 text-xs max-w-sm mx-auto">
+            You have not registered for any games yet. Browse matches and reserve your spot.
+          </p>
+          <button
+            onClick={() => setCurrentView('events')}
+            className="px-6 py-3 rounded-xl bg-[#00E676] text-black font-extrabold text-xs uppercase cursor-pointer hover:bg-[#00c965]"
+          >
+            View Matches
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {bookings.map((b) => {
+            const linkedEvent = events.find((e) => e.id === b.event_id);
+            const matchDate = b.match_date || linkedEvent?.date || 'Scheduled';
+            const matchTime = b.match_time || linkedEvent?.time || 'TBA';
+            const matchLocation = b.match_location || linkedEvent?.location || 'Addis Ababa';
+
+            return (
+              <div
+                key={b.id}
+                className="bg-[#0E1526] border border-[#1A263D] rounded-3xl p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 shadow-xl"
+              >
+                <div className="space-y-2">
+                  <span
+                    className={`inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase ${
+                      b.status === 'approved'
+                        ? 'bg-[#00E676]/20 text-[#00E676] border border-[#00E676]/30'
+                        : b.status === 'rejected'
+                          ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                          : 'bg-amber-400/20 text-amber-400 border border-amber-400/30'
+                    }`}
+                  >
+                    {b.status === 'approved'
+                      ? '✓ Verified Pass'
+                      : b.status === 'rejected'
+                        ? '✕ Payment Rejected'
+                        : '⏳ Admin Verification Pending'}
+                  </span>
+                  <h3 className="text-xl font-extrabold text-white">{b.match_title}</h3>
+                  <p className="text-xs text-slate-400">
+                    📅 {matchDate} • {matchTime} • 📍 {matchLocation}
+                  </p>
+                  <p className="text-xs text-slate-300">
+                    Fee: <strong className="text-[#00E676]">{b.amount} ETB</strong> via{' '}
+                    {b.payment_method}
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => onViewReceipt(b.screenshot_url)}
+                  className="px-4 py-2 bg-[#111A2E] hover:bg-[#16233B] text-slate-300 font-bold text-xs rounded-xl border border-[#1E2D4A] cursor-pointer"
+                >
+                  View Receipt
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </main>
+  );
+};

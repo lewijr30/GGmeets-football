@@ -1,0 +1,142 @@
+import React, { useState } from 'react';
+import { UserProfile } from '../types';
+
+interface ProfileViewProps {
+  userProfile: UserProfile;
+  onSaveProfile: (updated: UserProfile) => void;
+  onFileUpload: (e: React.ChangeEvent<HTMLInputElement>, callback: (dataUrl: string) => void) => void;
+}
+
+export const ProfileView: React.FC<ProfileViewProps> = ({
+  userProfile,
+  onSaveProfile,
+  onFileUpload,
+}) => {
+  const [name, setName] = useState(userProfile.name);
+  const [phone, setPhone] = useState(userProfile.phone);
+  const [position, setPosition] = useState(userProfile.position);
+  const [neighborhood, setNeighborhood] = useState(userProfile.neighborhood);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSaveProfile({
+      ...userProfile,
+      name: name.trim() || userProfile.name,
+      phone: phone.trim() || userProfile.phone,
+      position,
+      neighborhood: neighborhood.trim() || userProfile.neighborhood,
+    });
+  };
+
+  return (
+    <main className="flex-1 max-w-xl mx-auto px-4 sm:px-6 py-10 w-full">
+      <div className="bg-[#0E1526] border border-[#1A263D] rounded-3xl p-8 text-center relative overflow-hidden shadow-2xl">
+        <div className="absolute top-0 inset-x-0 h-32 bg-gradient-to-r from-emerald-600/30 to-[#00E676]/20" />
+        <div className="relative pt-8 flex flex-col items-center">
+          <div className="relative mb-4">
+            <img
+              src={userProfile.avatar}
+              alt="Profile"
+              className="w-28 h-28 rounded-full border-4 border-[#0E1526] object-cover shadow-2xl"
+            />
+            <label className="absolute bottom-1 right-1 p-2 bg-[#00E676] text-black rounded-full cursor-pointer hover:scale-110 transition shadow-lg text-xs">
+              📷
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) =>
+                  onFileUpload(e, (dataUrl) =>
+                    onSaveProfile({
+                      ...userProfile,
+                      name: name.trim() || userProfile.name,
+                      phone: phone.trim() || userProfile.phone,
+                      position,
+                      neighborhood: neighborhood.trim() || userProfile.neighborhood,
+                      avatar: dataUrl,
+                    })
+                  )
+                }
+                className="hidden"
+              />
+            </label>
+          </div>
+
+          <h2 className="text-2xl font-extrabold text-white">{userProfile.name}</h2>
+          <p className="text-xs text-slate-400 font-mono mt-0.5">{userProfile.phone}</p>
+
+          <div className="flex gap-2 mt-3">
+            <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-[#111A2E] text-slate-300 border border-[#1E2D4A]">
+              ⚽ {userProfile.position}
+            </span>
+            <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-[#111A2E] text-slate-300 border border-[#1E2D4A]">
+              📍 {userProfile.neighborhood}
+            </span>
+          </div>
+
+          <form onSubmit={handleSubmit} className="w-full mt-6 text-left space-y-3">
+            <div>
+              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                Full Name
+              </label>
+              <input
+                name="p_name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                Phone Number
+              </label>
+              <input
+                name="p_phone"
+                type="text"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                  Position
+                </label>
+                <select
+                  name="p_pos"
+                  value={position}
+                  onChange={(e) => setPosition(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
+                >
+                  <option value="Striker">Striker</option>
+                  <option value="Midfielder">Midfielder</option>
+                  <option value="Defender">Defender</option>
+                  <option value="Goalkeeper">Goalkeeper</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                  Subcity
+                </label>
+                <input
+                  name="p_area"
+                  type="text"
+                  value={neighborhood}
+                  onChange={(e) => setNeighborhood(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
+                />
+              </div>
+            </div>
+            <button
+              type="submit"
+              className="w-full py-2.5 mt-2 bg-[#00E676] text-black font-extrabold text-xs rounded-xl hover:bg-[#00c965] cursor-pointer transition"
+            >
+              Save Changes
+            </button>
+          </form>
+        </div>
+      </div>
+    </main>
+  );
+};
