@@ -1,0 +1,260 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'lewijunior80@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Schema Validation Blueprint: AdminRole
+    function isValidAdminRole(data) {
+      return data.keys().hasAll(['uid', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.createdAt is timestamp;
+    }
+
+    // Schema Validation Blueprint: Match
+    function isValidMatch(data) {
+      return data.keys().hasAll([
+          'id',
+          'title',
+          'event_type',
+          'date',
+          'time',
+          'location',
+          'price',
+          'total_spots',
+          'verified_spots',
+          'pending_spots',
+          'image_url',
+          'description',
+          'amenities',
+          'visibility',
+          'lastBookingId',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'title',
+          'event_type',
+          'date',
+          'time',
+          'location',
+          'price',
+          'total_spots',
+          'verified_spots',
+          'pending_spots',
+          'image_url',
+          'description',
+          'amenities',
+          'visibility',
+          'lastBookingId',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        data.event_type is string && data.event_type.size() <= 30 &&
+        data.event_type in ['5-a-side', '7-a-side', 'Full Field'] &&
+        data.date is string && data.date.size() >= 1 && data.date.size() <= 60 &&
+        data.time is string && data.time.size() >= 1 && data.time.size() <= 60 &&
+        data.location is string && data.location.size() >= 1 && data.location.size() <= 160 &&
+        data.price is number && data.price >= 0 && data.price <= 100000 &&
+        data.total_spots is int && data.total_spots >= 1 && data.total_spots <= 200 &&
+        data.verified_spots is int && data.verified_spots >= 0 && data.verified_spots <= data.total_spots &&
+        data.pending_spots is int && data.pending_spots >= 0 &&
+        (data.verified_spots + data.pending_spots) <= data.total_spots &&
+        data.image_url is string && data.image_url.size() >= 5 && data.image_url.size() <= 700000 &&
+        data.description is string && data.description.size() >= 0 && data.description.size() <= 1000 &&
+        data.amenities is list && data.amenities.size() <= 10 &&
+        (data.amenities.size() == 0 || (data.amenities[0] is string && data.amenities[0].size() <= 60)) &&
+        data.visibility is string && data.visibility.size() <= 10 && data.visibility == 'public' &&
+        isValidId(data.lastBookingId) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Schema Validation Blueprint: Booking
+    function isValidBooking(data) {
+      return data.keys().hasAll([
+          'id',
+          'ownerId',
+          'event_id',
+          'match_title',
+          'match_date',
+          'match_time',
+          'match_location',
+          'player_name',
+          'player_phone',
+          'amount',
+          'payment_method',
+          'status',
+          'screenshot_url',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'ownerId',
+          'event_id',
+          'match_title',
+          'match_date',
+          'match_time',
+          'match_location',
+          'player_name',
+          'player_phone',
+          'amount',
+          'payment_method',
+          'status',
+          'screenshot_url',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.ownerId) &&
+        isValidId(data.event_id) &&
+        data.match_title is string && data.match_title.size() >= 1 && data.match_title.size() <= 120 &&
+        data.match_date is string && data.match_date.size() >= 1 && data.match_date.size() <= 60 &&
+        data.match_time is string && data.match_time.size() >= 1 && data.match_time.size() <= 60 &&
+        data.match_location is string && data.match_location.size() >= 1 && data.match_location.size() <= 160 &&
+        data.player_name is string && data.player_name.size() >= 1 && data.player_name.size() <= 80 &&
+        data.player_phone is string && data.player_phone.size() >= 3 && data.player_phone.size() <= 30 &&
+        data.amount is number && data.amount >= 0 && data.amount <= 100000 &&
+        data.payment_method is string && data.payment_method.size() <= 20 &&
+        data.payment_method in ['Telebirr', 'CBE'] &&
+        data.status is string && data.status.size() <= 20 &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        data.screenshot_url is string && data.screenshot_url.size() >= 10 && data.screenshot_url.size() <= 700000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Trusted Admin Membership Collection (Read-Only to Self; No Client Self-Escalation)
+    match /admins/{adminUid} {
+      allow get: if isVerifiedUser() && isValidId(adminUid) && request.auth.uid == adminUid && isValidAdminRole(existing());
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    // Public Pickup Football Matches Collection
+    match /matches/{matchId} {
+      allow get: if isValidId(matchId) && existing().visibility == 'public';
+      allow list: if existing().visibility == 'public';
+
+      allow create: if isVerifiedUser() &&
+        isValidId(matchId) &&
+        isValidMatch(incoming()) &&
+        incoming().id == matchId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isValidMatch(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(matchId) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Host Admin match management / spot verification / limit change
+          (incoming().diff(existing()).affectedKeys().hasOnly([
+              'title',
+              'event_type',
+              'date',
+              'time',
+              'location',
+              'price',
+              'total_spots',
+              'verified_spots',
+              'pending_spots',
+              'image_url',
+              'description',
+              'amenities',
+              'lastBookingId',
+              'updatedAt'
+            ]) && isAdmin()) ||
+          // Action 2: Verified Player atomic spot reservation paired with Booking creation
+          (incoming().diff(existing()).affectedKeys().hasOnly(['pending_spots', 'lastBookingId', 'updatedAt']) &&
+            incoming().pending_spots == existing().pending_spots + 1 &&
+            (existing().verified_spots + existing().pending_spots) < existing().total_spots &&
+            !exists(/databases/$(database)/documents/bookings/$(incoming().lastBookingId)) &&
+            existsAfter(/databases/$(database)/documents/bookings/$(incoming().lastBookingId)) &&
+            getAfter(/databases/$(database)/documents/bookings/$(incoming().lastBookingId)).data.ownerId == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/bookings/$(incoming().lastBookingId)).data.event_id == matchId)
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(matchId) && isAdmin();
+    }
+
+    // Player Bookings & Payment Receipts Collection (PII Strictly Isolated to Owner & Admin)
+    match /bookings/{bookingId} {
+      allow get: if isVerifiedUser() &&
+        isValidId(bookingId) &&
+        (existing().ownerId == request.auth.uid || isAdmin());
+
+      // Zero DB lookups inside allow list (Cost-Optimization Clause compliant)
+      allow list: if isVerifiedUser() &&
+        (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(bookingId) &&
+        isValidBooking(incoming()) &&
+        incoming().id == bookingId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/matches/$(incoming().event_id)) &&
+        getAfter(/databases/$(database)/documents/matches/$(incoming().event_id)).data.lastBookingId == bookingId &&
+        getAfter(/databases/$(database)/documents/matches/$(incoming().event_id)).data.pending_spots ==
+          get(/databases/$(database)/documents/matches/$(incoming().event_id)).data.pending_spots + 1;
+
+      allow update: if isValidBooking(incoming()) &&
+        isVerifiedUser() &&
+        isValidId(bookingId) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().event_id == existing().event_id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+        isAdmin();
+
+      allow delete: if false;
+    }
+  }
+}

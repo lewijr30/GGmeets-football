@@ -1,0 +1,269 @@
+{
+  "entities": {
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Trusted administrator membership document keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the administrator.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin role was granted."
+        }
+      },
+      "required": ["uid", "createdAt"]
+    },
+    "Match": {
+      "title": "Match",
+      "description": "Publicly visible pickup football match in Addis Ababa with live spot capacity tracking.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique match identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Display title of the football match.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "event_type": {
+          "type": "string",
+          "description": "Match format category.",
+          "enum": ["5-a-side", "7-a-side", "Full Field"],
+          "maxLength": 30
+        },
+        "date": {
+          "type": "string",
+          "description": "Match date label.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "time": {
+          "type": "string",
+          "description": "Match kickoff and end time window.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "location": {
+          "type": "string",
+          "description": "Pitch name and neighborhood in Addis Ababa.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "price": {
+          "type": "number",
+          "description": "Entry fee per player in ETB."
+        },
+        "total_spots": {
+          "type": "number",
+          "description": "Maximum allowed bookings before registration closes."
+        },
+        "verified_spots": {
+          "type": "number",
+          "description": "Count of admin-approved player spots."
+        },
+        "pending_spots": {
+          "type": "number",
+          "description": "Count of pending payment submissions reserving spots."
+        },
+        "image_url": {
+          "type": "string",
+          "description": "Pitch cover image URL or compressed JPEG data URL.",
+          "minLength": 5,
+          "maxLength": 700000
+        },
+        "description": {
+          "type": "string",
+          "description": "Match rules, footwear requirements, and notes.",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "amenities": {
+          "type": "array",
+          "description": "Bounded list of up to 10 pitch amenities."
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Visibility state for query enforcement.",
+          "enum": ["public"],
+          "maxLength": 10
+        },
+        "lastBookingId": {
+          "type": "string",
+          "description": "ID of most recent atomic player booking reservation.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update."
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "event_type",
+        "date",
+        "time",
+        "location",
+        "price",
+        "total_spots",
+        "verified_spots",
+        "pending_spots",
+        "image_url",
+        "description",
+        "amenities",
+        "visibility",
+        "lastBookingId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Player spot registration and Telebirr/CBE payment receipt record containing player PII.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique booking identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player who submitted the booking.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "event_id": {
+          "type": "string",
+          "description": "Referenced Match document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "match_title": {
+          "type": "string",
+          "description": "Snapshot of match title.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "match_date": {
+          "type": "string",
+          "description": "Snapshot of match date.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "match_time": {
+          "type": "string",
+          "description": "Snapshot of match time.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "match_location": {
+          "type": "string",
+          "description": "Snapshot of match location.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "player_name": {
+          "type": "string",
+          "description": "Full name of the registered player.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "player_phone": {
+          "type": "string",
+          "description": "Player phone number (PII isolated to owner and admin).",
+          "minLength": 3,
+          "maxLength": 30
+        },
+        "amount": {
+          "type": "number",
+          "description": "Payment amount in ETB."
+        },
+        "payment_method": {
+          "type": "string",
+          "description": "Mobile banking channel used.",
+          "enum": ["Telebirr", "CBE"],
+          "maxLength": 20
+        },
+        "status": {
+          "type": "string",
+          "description": "Verification status controlled by Host Admin.",
+          "enum": ["pending", "approved", "rejected"],
+          "maxLength": 20
+        },
+        "screenshot_url": {
+          "type": "string",
+          "description": "Compressed transfer receipt screenshot.",
+          "minLength": 10,
+          "maxLength": 700000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest status review."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "event_id",
+        "match_title",
+        "match_date",
+        "match_time",
+        "match_location",
+        "player_name",
+        "player_phone",
+        "amount",
+        "payment_method",
+        "status",
+        "screenshot_url",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminRole" },
+      "description": "Trusted administrator lookup collection."
+    },
+    "/matches/{matchId}": {
+      "schema": { "$ref": "#/entities/Match" },
+      "description": "Public pickup football matches managed by Host Admin with atomic spot reservation counters."
+    },
+    "/bookings/{bookingId}": {
+      "schema": { "$ref": "#/entities/Booking" },
+      "description": "Player booking receipts isolated strictly to the booking owner and Host Admin."
+    }
+  }
+}

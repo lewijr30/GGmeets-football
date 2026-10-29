@@ -1,3 +1,19 @@
+import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
+import {
+  Timestamp,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+  writeBatch,
+} from 'firebase/firestore';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AdminLoginView } from './components/AdminLoginView';
 import { AdminView } from './components/AdminView';
@@ -13,8 +29,26 @@ import {
 import { MyPassesView } from './components/MyPassesView';
 import { Navbar } from './components/Navbar';
 import { ProfileView } from './components/ProfileView';
-import { DEFAULT_BOOKINGS, DEFAULT_GAMES, DEFAULT_PROFILE } from './constants/data';
-import { supabase } from './lib/supabase';
+import { DEFAULT_GAMES, DEFAULT_PROFILE } from './constants/data';
+import {
+  BOOTSTRAPPED_ADMIN_EMAIL,
+  MAX_DATE_LENGTH,
+  MAX_DESCRIPTION_LENGTH,
+  MAX_IMAGE_LENGTH,
+  MAX_LOCATION_LENGTH,
+  MAX_PHONE_LENGTH,
+  MAX_PLAYER_NAME_LENGTH,
+  MAX_TIME_LENGTH,
+  MAX_TITLE_LENGTH,
+  OperationType,
+  auth,
+  db,
+  docToBooking,
+  docToMatchEvent,
+  googleProvider,
+  handleFirestoreError,
+  sanitizeId,
+} from './lib/firebase';
 import {
   AdminTab,
   ApprovalFilter,
@@ -27,6 +61,7 @@ import {
   UserProfile,
 } from './types';
 import { getMatchCapacity } from './utils/capacity';
+import { compressImageFile } from './utils/image';
 
 const ADMIN_TOKEN_STORAGE_KEY = 'gg_admin_lock_token';
 
@@ -64,37 +99,85 @@ function normalizePath(path: string): string {
   return trimmed === '' ? '/' : trimmed;
 }
 
+function getPublicClientUrl(): string {
+  const origin = window.location.origin;
+  if (origin.includes('ais-dev-')) {
+    return origin.replace('ais-dev-', 'ais-pre-');
+  }
+  return origin;
+}
+
+function buildValidMatchFields(ev: MatchEvent) {
+  const matchId = sanitizeId(ev.id || `${Date.now()}`, 'match');
+  const validFormat = ['5-a-side', '7-a-side', 'Full Field'].includes(ev.event_type)
+    ? ev.event_type
+    : '5-a-side';
+  const totalSpots = Math.max(1, Math.min(200, Math.round(Number(ev.total_spots) || 10)));
+  const verifiedSpots = Math.min(
+    totalSpots,
+    Math.max(0, Math.round(Number(ev.verified_spots ?? ev.booked_spots) || 0))
+  );
+  const pendingSpots = Math.min(
+    Math.max(0, totalSpots - verifiedSpots),
+    Math.max(0, Math.round(Number(ev.pending_spots) || 0))
+  );
+  const cleanImage =
+    ev.image_url && ev.image_url.trim().length >= 5
+      ? ev.image_url.trim().slice(0, MAX_IMAGE_LENGTH)
+      : 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=700';
+  const cleanAmenities = (
+    Array.isArray(ev.amenities) && ev.amenities.length > 0
+      ? ev.amenities
+      : ['Artificial Turf', 'Bibs Provided', 'Water']
+  )
+    .slice(0, 10)
+    .map((item) => String(item).slice(0, 60));
+
+  return {
+    id: matchId,
+    title: (ev.title || 'Pickup Match').trim().slice(0, MAX_TITLE_LENGTH) || 'Pickup Match',
+    event_type: validFormat,
+    date: (ev.date || 'Today').trim().slice(0, MAX_DATE_LENGTH) || 'Today',
+    time: (ev.time || '5:30 PM - 7:00 PM').trim().slice(0, MAX_TIME_LENGTH) || '5:30 PM - 7:00 PM',
+    location: (ev.location || 'Addis Ababa').trim().slice(0, MAX_LOCATION_LENGTH) || 'Addis Ababa',
+    price: Math.max(0, Math.min(100000, Number(ev.price) || 0)),
+    total_spots: totalSpots,
+    verified_spots: verifiedSpots,
+    pending_spots: pendingSpots,
+    image_url: cleanImage,
+    description: (ev.description || 'Friendly pickup game.').trim().slice(0, MAX_DESCRIPTION_LENGTH),
+    amenities: cleanAmenities,
+    visibility: 'public' as const,
+    lastBookingId: sanitizeId(ev.lastBookingId || 'init', 'init'),
+  };
+}
+
 function playNotificationChime() {
   try {
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return;
     const ctx = new AudioCtx();
     const now = ctx.currentTime;
 
-    const osc1 = ctx.createOscillator();
-    const gain1 = ctx.createGain();
-    osc1.type = 'sine';
-    osc1.frequency.setValueAtTime(587.33, now); // D5
-    osc1.frequency.setValueAtTime(880, now + 0.12); // A5
-    gain1.gain.setValueAtTime(0.14, now);
-    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(587.33, now);
+    osc.frequency.setValueAtTime(783.99, now + 0.11);
+    osc.frequency.setValueAtTime(1046.5, now + 0.22);
+    gain.gain.setValueAtTime(0.16, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
 
-    osc1.connect(gain1);
-    gain1.connect(ctx.destination);
-    osc1.start(now);
-    osc1.stop(now + 0.45);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.58);
   } catch {
-    // Ignore audio autoplay restrictions
+    // Ignore autoplay restrictions
   }
 }
-
-type ServerRealtimeMessage =
-  | { type: 'state:sync'; events: MatchEvent[]; bookings: Booking[] }
-  | { type: 'booking:created'; booking: Booking }
-  | { type: 'booking:updated'; booking: Booking }
-  | { type: 'event:created'; event: MatchEvent }
-  | { type: 'event:updated'; event: MatchEvent }
-  | { type: 'event:deleted'; eventId: string };
 
 export function App() {
   const [pathname, setPathname] = useState<string>(() =>
@@ -104,6 +187,10 @@ export function App() {
   const [adminTab, setAdminTab] = useState<AdminTab>('approvals');
   const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>('all');
 
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [isSigningInGoogle, setIsSigningInGoogle] = useState<boolean>(false);
+
   const [isPasswordConfigured, setIsPasswordConfigured] = useState<boolean>(true);
   const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(false);
   const [isEnvManagedPassword, setIsEnvManagedPassword] = useState<boolean>(false);
@@ -111,10 +198,19 @@ export function App() {
   const [changePasswordOpen, setChangePasswordOpen] = useState<boolean>(false);
 
   const [events, setEvents] = useState<MatchEvent[]>(DEFAULT_GAMES);
-  const [bookings, setBookings] = useState<Booking[]>(DEFAULT_BOOKINGS);
+  const [bookings, setBookings] = useState<Booking[]>([]);
   const [userProfile, setUserProfile] = useState<UserProfile>(() =>
     loadFromStorage('gg_profile', DEFAULT_PROFILE)
   );
+
+  const [bookingPlayerName, setBookingPlayerName] = useState<string>(() => {
+    const saved = loadFromStorage('gg_profile', DEFAULT_PROFILE);
+    return saved.name === DEFAULT_PROFILE.name ? '' : saved.name;
+  });
+  const [bookingPlayerPhone, setBookingPlayerPhone] = useState<string>(() => {
+    const saved = loadFromStorage('gg_profile', DEFAULT_PROFILE);
+    return saved.phone === DEFAULT_PROFILE.phone ? '' : saved.phone;
+  });
 
   const [liveAdminAlerts, setLiveAdminAlerts] = useState<Booking[]>([]);
   const [browserNotifPermission, setBrowserNotifPermission] = useState<string>(() =>
@@ -135,8 +231,18 @@ export function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const toastTimerRef = useRef<number | null>(null);
+  const knownBookingIdsRef = useRef<Set<string> | null>(null);
+  const hasSeededMatchesRef = useRef<boolean>(false);
   const isAdminUnlockedRef = useRef<boolean>(false);
   isAdminUnlockedRef.current = isAdminUnlocked;
+
+  const isFirebaseAdminUser = useMemo(() => {
+    return Boolean(
+      firebaseUser &&
+        firebaseUser.emailVerified &&
+        firebaseUser.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()
+    );
+  }, [firebaseUser]);
 
   const selectedEvent = useMemo(
     () => (selectedEventId ? events.find((e) => e.id === selectedEventId) || null : null),
@@ -173,105 +279,233 @@ export function App() {
     }
     toastTimerRef.current = window.setTimeout(() => {
       setToastMessage(null);
-    }, 3400);
+    }, 3600);
   }, []);
 
-  const fetchServerState = useCallback(async () => {
+  // Track Firebase Auth readiness & current Google user
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      setAuthReady(true);
+      if (user?.displayName) {
+        setBookingPlayerName((prev) => prev || user.displayName || '');
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleGoogleSignIn = useCallback(async () => {
+    setIsSigningInGoogle(true);
     try {
-      const res = await fetch('/api/state');
-      if (!res.ok) return;
-      const data = (await res.json()) as { events?: MatchEvent[]; bookings?: Booking[] };
-      if (Array.isArray(data.events)) setEvents(data.events);
-      if (Array.isArray(data.bookings)) setBookings(data.bookings);
+      const cred = await signInWithPopup(auth, googleProvider);
+      if (cred.user.displayName) {
+        setBookingPlayerName((prev) => prev || cred.user.displayName || '');
+      }
+      showToast(`✅ Connected as ${cred.user.email || cred.user.displayName || 'Player'}!`);
     } catch (err) {
-      console.warn('Failed to fetch server state:', err);
+      const message = err instanceof Error ? err.message : 'Google Sign-In was cancelled.';
+      if (!message.includes('popup-closed-by-user')) {
+        showToast(`⚠️ ${message}`);
+      }
+    } finally {
+      setIsSigningInGoogle(false);
+    }
+  }, [showToast]);
+
+  const handleGoogleSignOut = useCallback(async () => {
+    try {
+      await signOut(auth);
+      showToast('Signed out of Google.');
+    } catch {
+      // Ignore sign-out errors
+    }
+  }, [showToast]);
+
+  // Seed initial matches into Firestore once when Host Admin connects if Firestore is empty
+  const seedInitialMatchesIfEmpty = useCallback(async () => {
+    if (!isFirebaseAdminUser || hasSeededMatchesRef.current) return;
+    hasSeededMatchesRef.current = true;
+
+    try {
+      const existingSnap = await getDocs(
+        query(collection(db, 'matches'), where('visibility', '==', 'public'))
+      );
+      if (!existingSnap.empty) return;
+
+      let seedSource: MatchEvent[] = DEFAULT_GAMES;
+      try {
+        const res = await fetch('/api/state', { cache: 'no-store' });
+        if (res.ok) {
+          const localData = (await res.json()) as { events?: MatchEvent[] };
+          if (Array.isArray(localData.events) && localData.events.length > 0) {
+            seedSource = localData.events;
+          }
+        }
+      } catch {
+        // Fallback to DEFAULT_GAMES
+      }
+
+      const batch = writeBatch(db);
+      for (const rawEv of seedSource) {
+        const clean = buildValidMatchFields({
+          ...rawEv,
+          verified_spots: rawEv.verified_spots ?? rawEv.booked_spots ?? 0,
+          pending_spots: rawEv.pending_spots ?? 0,
+        });
+        batch.set(doc(db, 'matches', clean.id), {
+          ...clean,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      await batch.commit();
+      showToast('⚡ Synced existing matches live to Firebase Firestore!');
+    } catch (error) {
+      hasSeededMatchesRef.current = false;
+      handleFirestoreError(error, OperationType.WRITE, 'matches');
+    }
+  }, [isFirebaseAdminUser, showToast]);
+
+  // Real-time Firestore listener for public matches (works across all client links & devices)
+  useEffect(() => {
+    if (!authReady) return;
+
+    const matchesQuery = query(collection(db, 'matches'), where('visibility', '==', 'public'));
+    const unsubscribe = onSnapshot(
+      matchesQuery,
+      (snapshot) => {
+        if (snapshot.empty) {
+          if (isFirebaseAdminUser) {
+            void seedInitialMatchesIfEmpty();
+          }
+          return;
+        }
+
+        const loaded: Array<{ match: MatchEvent; sortMs: number }> = [];
+        snapshot.forEach((docSnap) => {
+          const raw = docSnap.data() as Record<string, unknown>;
+          const createdTs = raw.createdAt;
+          const sortMs = createdTs instanceof Timestamp ? createdTs.toMillis() : 0;
+          loaded.push({
+            match: docToMatchEvent({ ...raw, id: docSnap.id }),
+            sortMs,
+          });
+        });
+
+        loaded.sort((a, b) => b.sortMs - a.sortMs);
+        setEvents(loaded.map((item) => item.match));
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'matches');
+      }
+    );
+
+    return () => unsubscribe();
+  }, [authReady, isFirebaseAdminUser, seedInitialMatchesIfEmpty]);
+
+  // Real-time incoming bookings processor & live Admin notification trigger
+  const applyIncomingBookings = useCallback((incomingBookings: Booking[]) => {
+    if (knownBookingIdsRef.current === null) {
+      knownBookingIdsRef.current = new Set(incomingBookings.map((b) => b.id));
+      setBookings(incomingBookings);
+      return;
+    }
+
+    const newlySubmittedPending: Booking[] = [];
+    for (const b of incomingBookings) {
+      if (!knownBookingIdsRef.current.has(b.id)) {
+        knownBookingIdsRef.current.add(b.id);
+        if (b.status === 'pending') {
+          newlySubmittedPending.push(b);
+        }
+      }
+    }
+
+    setBookings(incomingBookings);
+    setLiveAdminAlerts((prev) =>
+      prev.filter((alertItem) => {
+        const updated = incomingBookings.find((b) => b.id === alertItem.id);
+        return updated && updated.status === 'pending';
+      })
+    );
+
+    if (newlySubmittedPending.length > 0 && isAdminUnlockedRef.current) {
+      playNotificationChime();
+      setLiveAdminAlerts((prev) => {
+        const existingIds = new Set(prev.map((a) => a.id));
+        const additions = newlySubmittedPending.filter((b) => !existingIds.has(b.id));
+        return [...additions, ...prev].slice(0, 5);
+      });
+
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        for (const nb of newlySubmittedPending) {
+          try {
+            new Notification('⚽ New Payment Pending — GGmeets', {
+              body: `${nb.player_name} sent ${nb.amount} ETB (${nb.payment_method}) for ${nb.match_title}`,
+            });
+          } catch {
+            // Ignore browser notification errors
+          }
+        }
+      }
     }
   }, []);
 
-  // Initial state load + WebSocket real-time synchronization
+  // Real-time Firestore listener for bookings (all bookings for Admin; owner-isolated for Players)
   useEffect(() => {
-    fetchServerState();
+    if (!authReady || !firebaseUser || !firebaseUser.emailVerified) {
+      knownBookingIdsRef.current = null;
+      setBookings([]);
+      return;
+    }
 
-    let ws: WebSocket | null = null;
-    let reconnectTimer: number | null = null;
-    let unmounted = false;
+    knownBookingIdsRef.current = null;
 
-    const connectWs = () => {
-      if (unmounted) return;
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const bookingsRef = isFirebaseAdminUser
+      ? collection(db, 'bookings')
+      : query(collection(db, 'bookings'), where('ownerId', '==', firebaseUser.uid));
 
-      ws.onopen = () => {
-        fetchServerState();
-      };
+    const unsubscribe = onSnapshot(
+      bookingsRef,
+      (snapshot) => {
+        const rows: Array<{ booking: Booking; sortMs: number }> = [];
+        snapshot.forEach((docSnap) => {
+          const raw = docSnap.data() as Record<string, unknown>;
+          const createdTs = raw.createdAt;
+          const sortMs = createdTs instanceof Timestamp ? createdTs.toMillis() : Date.now();
+          rows.push({
+            booking: docToBooking({ ...raw, id: docSnap.id }),
+            sortMs,
+          });
+        });
+        rows.sort((a, b) => b.sortMs - a.sortMs);
+        applyIncomingBookings(rows.map((r) => r.booking));
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'bookings');
+      }
+    );
 
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data) as ServerRealtimeMessage;
-          if (msg.type === 'state:sync') {
-            setEvents(msg.events);
-            setBookings(msg.bookings);
-          } else if (msg.type === 'booking:created') {
-            setBookings((prev) =>
-              prev.some((b) => b.id === msg.booking.id) ? prev : [msg.booking, ...prev]
-            );
-
-            if (isAdminUnlockedRef.current && msg.booking.status === 'pending') {
-              playNotificationChime();
-              setLiveAdminAlerts((prev) =>
-                prev.some((a) => a.id === msg.booking.id)
-                  ? prev
-                  : [msg.booking, ...prev].slice(0, 4)
-              );
-
-              if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-                try {
-                  new Notification('⚽ New Payment Pending — GGmeets', {
-                    body: `${msg.booking.player_name} sent ${msg.booking.amount} ETB (${msg.booking.payment_method}) for ${msg.booking.match_title}`,
-                  });
-                } catch {
-                  // Ignore browser notification errors
-                }
-              }
-            }
-          } else if (msg.type === 'booking:updated') {
-            setBookings((prev) =>
-              prev.map((b) => (b.id === msg.booking.id ? msg.booking : b))
-            );
-            setLiveAdminAlerts((prev) => prev.filter((a) => a.id !== msg.booking.id));
-          } else if (msg.type === 'event:created') {
-            setEvents((prev) =>
-              prev.some((e) => e.id === msg.event.id) ? prev : [msg.event, ...prev]
-            );
-          } else if (msg.type === 'event:updated') {
-            setEvents((prev) =>
-              prev.map((e) => (e.id === msg.event.id ? msg.event : e))
-            );
-          } else if (msg.type === 'event:deleted') {
-            setEvents((prev) => prev.filter((e) => e.id !== msg.eventId));
-          }
-        } catch (err) {
-          console.warn('WS message parse error:', err);
-        }
-      };
-
-      ws.onclose = () => {
-        if (!unmounted) {
-          reconnectTimer = window.setTimeout(connectWs, 2500);
-        }
-      };
-    };
-
-    connectWs();
-
-    return () => {
-      unmounted = true;
-      if (reconnectTimer) window.clearTimeout(reconnectTimer);
-      if (ws) ws.close();
-    };
-  }, [fetchServerState]);
+    return () => unsubscribe();
+  }, [authReady, firebaseUser, isFirebaseAdminUser, applyIncomingBookings]);
 
   const isAdminRoute = pathname === '/admin' || pathname === '/admin/login';
+
+  const pendingCount = useMemo(
+    () => bookings.filter((b) => b.status === 'pending').length,
+    [bookings]
+  );
+
+  // Update browser tab title dynamically when Admin has pending approvals
+  useEffect(() => {
+    if (isAdminRoute && isAdminUnlocked && pendingCount > 0) {
+      document.title = `(${pendingCount}) 🔔 Payment Pending — GGmeets Admin`;
+    } else if (isAdminRoute) {
+      document.title = 'GGmeets — Host Admin';
+    } else {
+      document.title = 'GGmeets — Addis Ababa Football Meetup';
+    }
+  }, [isAdminRoute, isAdminUnlocked, pendingCount]);
 
   useEffect(() => {
     if (!isAdminRoute) return;
@@ -281,21 +515,20 @@ export function App() {
 
     const token = getStoredAdminToken();
     fetch('/api/admin/status', {
+      cache: 'no-store',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((res) => res.json())
-      .then(
-        (data: { configured?: boolean; unlocked?: boolean; envManaged?: boolean }) => {
-          if (!active) return;
-          setIsPasswordConfigured(Boolean(data.configured));
-          setIsAdminUnlocked(Boolean(data.unlocked));
-          setIsEnvManagedPassword(Boolean(data.envManaged));
-          if (!data.unlocked) {
-            setStoredAdminToken(null);
-          }
-          setIsCheckingLock(false);
+      .then((data: { configured?: boolean; unlocked?: boolean; envManaged?: boolean }) => {
+        if (!active) return;
+        setIsPasswordConfigured(Boolean(data.configured));
+        setIsAdminUnlocked(Boolean(data.unlocked));
+        setIsEnvManagedPassword(Boolean(data.envManaged));
+        if (!data.unlocked) {
+          setStoredAdminToken(null);
         }
-      )
+        setIsCheckingLock(false);
+      })
       .catch(() => {
         if (!active) return;
         setIsAdminUnlocked(false);
@@ -420,7 +653,7 @@ export function App() {
   const handleCopyText = (text: string, label: string) => {
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text).then(() => {
-        showToast(`📋 Copied ${label} account number!`);
+        showToast(`📋 Copied ${label}!`);
       });
     }
   };
@@ -431,202 +664,283 @@ export function App() {
   ) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 6 * 1024 * 1024) {
-      showToast('⚠️ File size exceeds 6MB. Please upload a smaller image.');
+    if (file.size > 15 * 1024 * 1024) {
+      showToast('⚠️ File size exceeds 15MB. Please choose a smaller photo.');
       return;
     }
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      if (typeof reader.result === 'string') {
-        callback(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
+    compressImageFile(file, 960, 0.72)
+      .then(async (compressedDataUrl) => {
+        if (compressedDataUrl.length > MAX_IMAGE_LENGTH) {
+          const smaller = await compressImageFile(file, 680, 0.58);
+          if (smaller.length > MAX_IMAGE_LENGTH) {
+            showToast('⚠️ Image is still too large. Please select a smaller screenshot.');
+            return;
+          }
+          callback(smaller);
+          return;
+        }
+        callback(compressedDataUrl);
+      })
+      .catch(() => {
+        showToast('⚠️ Failed to process selected photo.');
+      });
   };
 
+  // Client submits Telebirr / CBE transfer screenshot -> atomic Firestore writeBatch
   const handleClientBookingSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedEvent) return;
+    if (!firebaseUser) {
+      await handleGoogleSignIn();
+      return;
+    }
     if (!receiptFilePreview) {
       showToast('⚠️ Please upload your transfer screenshot.');
       return;
     }
 
-    const currentCap = getMatchCapacity(selectedEvent, bookings);
-    if (currentCap.isFull) {
-      showToast('🔒 Booking limit reached! This match is now full.');
+    const cleanName = (bookingPlayerName.trim() || firebaseUser.displayName || 'Player').slice(
+      0,
+      MAX_PLAYER_NAME_LENGTH
+    );
+    const cleanPhone = bookingPlayerPhone.trim().slice(0, MAX_PHONE_LENGTH);
+    if (cleanPhone.length < 3) {
+      showToast('⚠️ Please enter a valid phone number.');
       return;
     }
 
     setIsSubmittingBooking(true);
+    const matchId = sanitizeId(selectedEvent.id, 'match');
+    const bookingId = sanitizeId(
+      `b-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      'b'
+    );
 
     try {
-      const res = await fetch('/api/bookings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          event_id: selectedEvent.id,
-          player_name: userProfile.name,
-          player_phone: userProfile.phone,
-          payment_method: paymentMethod,
-          screenshot_url: receiptFilePreview,
-        }),
-      });
+      const matchRef = doc(db, 'matches', matchId);
+      const matchSnap = await getDoc(matchRef);
 
-      const data = (await res.json()) as { ok?: boolean; booking?: Booking; error?: string };
-      if (!res.ok || !data.booking) {
+      if (!matchSnap.exists()) {
         setIsSubmittingBooking(false);
-        showToast(`⚠️ ${data.error || 'Unable to submit booking.'}`);
-        fetchServerState();
+        showToast('⚠️ This match is not yet published in live storage. Ask host to publish first.');
         return;
       }
 
-      const createdBooking = data.booking;
+      const freshMatch = matchSnap.data() as Record<string, unknown>;
+      const totalSpots = Math.max(1, Math.round(Number(freshMatch.total_spots) || 10));
+      const verifiedSpots = Math.max(0, Math.round(Number(freshMatch.verified_spots) || 0));
+      const pendingSpots = Math.max(0, Math.round(Number(freshMatch.pending_spots) || 0));
 
-      if (supabase) {
-        try {
-          await supabase.from('bookings').insert([
-            {
-              event_id: selectedEvent.id,
-              player_name: userProfile.name,
-              player_phone: userProfile.phone,
-              payment_method: paymentMethod,
-              screenshot_url: receiptFilePreview,
-              status: 'pending',
-            },
-          ]);
-        } catch {
-          // Optional Supabase sync
-        }
+      if (verifiedSpots + pendingSpots >= totalSpots) {
+        setIsSubmittingBooking(false);
+        showToast('🔒 Booking limit reached! All spots for this match are filled.');
+        return;
       }
 
-      setBookings((prev) =>
-        prev.some((b) => b.id === createdBooking.id) ? prev : [createdBooking, ...prev]
-      );
+      const bookingRef = doc(db, 'bookings', bookingId);
+      const batch = writeBatch(db);
+
+      batch.set(bookingRef, {
+        id: bookingId,
+        ownerId: firebaseUser.uid,
+        event_id: matchId,
+        match_title: (String(freshMatch.title || selectedEvent.title) || 'Pickup Match')
+          .trim()
+          .slice(0, MAX_TITLE_LENGTH),
+        match_date: (String(freshMatch.date || selectedEvent.date) || 'Scheduled')
+          .trim()
+          .slice(0, MAX_DATE_LENGTH),
+        match_time: (String(freshMatch.time || selectedEvent.time) || 'TBA')
+          .trim()
+          .slice(0, MAX_TIME_LENGTH),
+        match_location: (String(freshMatch.location || selectedEvent.location) || 'Addis Ababa')
+          .trim()
+          .slice(0, MAX_LOCATION_LENGTH),
+        player_name: cleanName,
+        player_phone: cleanPhone,
+        amount: Math.max(0, Math.min(100000, Number(freshMatch.price ?? selectedEvent.price) || 0)),
+        payment_method: paymentMethod === 'CBE' ? 'CBE' : 'Telebirr',
+        status: 'pending',
+        screenshot_url: receiptFilePreview.slice(0, MAX_IMAGE_LENGTH),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      batch.update(matchRef, {
+        pending_spots: pendingSpots + 1,
+        lastBookingId: bookingId,
+        updatedAt: serverTimestamp(),
+      });
+
+      await batch.commit();
+
+      // Save player's name & phone locally for convenience next time
+      setUserProfile((prev) => ({
+        ...prev,
+        name: cleanName,
+        phone: cleanPhone,
+      }));
+
       setIsSubmittingBooking(false);
       setBookingModalOpen(false);
       setReceiptFilePreview(null);
-      showToast('⚽ Receipt submitted! Host has been notified to verify your spot.');
+      showToast('⚽ Receipt submitted! Host has been notified in real time.');
       setCurrentView('my-tickets');
-    } catch {
+    } catch (error) {
       setIsSubmittingBooking(false);
-      showToast('⚠️ Network error while submitting receipt. Please try again.');
+      showToast('⚠️ Could not submit booking. Please check your connection and try again.');
+      handleFirestoreError(error, OperationType.WRITE, `bookings/${bookingId}`);
     }
   };
 
+  // Host Admin approves or rejects payment -> atomic Firestore writeBatch updating booking + spot tracker
   const handleUpdatePaymentStatus = async (
     bookingId: string,
-    _eventId: string,
+    eventId: string,
     newStatus: BookingStatus
   ) => {
-    const token = getStoredAdminToken();
+    if (!isFirebaseAdminUser) {
+      showToast(`⚠️ Sign in as ${BOOTSTRAPPED_ADMIN_EMAIL} to verify payments.`);
+      return;
+    }
+
+    const safeBookingId = sanitizeId(bookingId, 'b');
+    const safeMatchId = sanitizeId(eventId, 'match');
+    const targetBooking = bookings.find((b) => b.id === bookingId);
+    const prevStatus: BookingStatus = targetBooking?.status || 'pending';
+
     try {
-      const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/status`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ status: newStatus }),
+      const bookingRef = doc(db, 'bookings', safeBookingId);
+      const matchRef = doc(db, 'matches', safeMatchId);
+      const matchSnap = await getDoc(matchRef);
+
+      const batch = writeBatch(db);
+      batch.update(bookingRef, {
+        status: newStatus,
+        updatedAt: serverTimestamp(),
       });
 
-      const data = (await res.json()) as { ok?: boolean; booking?: Booking; error?: string };
-      if (!res.ok || !data.booking) {
-        showToast(`⚠️ ${data.error || 'Could not update payment status.'}`);
-        return;
+      if (matchSnap.exists()) {
+        const m = matchSnap.data() as Record<string, unknown>;
+        const totalSpots = Math.max(1, Math.round(Number(m.total_spots) || 10));
+        let nextVerified = Math.max(0, Math.round(Number(m.verified_spots) || 0));
+        let nextPending = Math.max(0, Math.round(Number(m.pending_spots) || 0));
+
+        if (prevStatus === 'pending' && newStatus === 'approved') {
+          nextPending = Math.max(0, nextPending - 1);
+          nextVerified = Math.min(totalSpots, nextVerified + 1);
+        } else if (prevStatus === 'pending' && newStatus === 'rejected') {
+          nextPending = Math.max(0, nextPending - 1);
+        } else if (prevStatus === 'approved' && newStatus === 'rejected') {
+          nextVerified = Math.max(0, nextVerified - 1);
+        }
+
+        if (nextVerified + nextPending > totalSpots) {
+          nextPending = Math.max(0, totalSpots - nextVerified);
+        }
+
+        batch.update(matchRef, {
+          verified_spots: nextVerified,
+          pending_spots: nextPending,
+          updatedAt: serverTimestamp(),
+        });
       }
 
-      setBookings((prev) => prev.map((b) => (b.id === bookingId ? data.booking! : b)));
+      await batch.commit();
       setLiveAdminAlerts((prev) => prev.filter((a) => a.id !== bookingId));
 
       if (newStatus === 'approved') {
-        showToast('✅ Payment Approved & spot verified!');
+        showToast('✅ Payment Approved & spot verified live!');
       } else if (newStatus === 'rejected') {
-        showToast('❌ Payment rejected & spot reopened.');
+        showToast('❌ Payment rejected & spot reopened live.');
       }
-
-      if (supabase) {
-        try {
-          await supabase.from('bookings').update({ status: newStatus }).eq('id', bookingId);
-        } catch {
-          // Optional Supabase sync
-        }
-      }
-    } catch {
-      showToast('⚠️ Network error while updating status.');
+    } catch (error) {
+      showToast('⚠️ Failed to update payment status.');
+      handleFirestoreError(error, OperationType.UPDATE, `bookings/${safeBookingId}`);
     }
   };
 
+  // Host Admin deletes a match from Firestore
   const handleConfirmDeleteMatch = async () => {
     if (!matchToDelete) return;
-    const deletedId = matchToDelete.id;
-    const token = getStoredAdminToken();
+    if (!isFirebaseAdminUser) {
+      showToast(`⚠️ Sign in as ${BOOTSTRAPPED_ADMIN_EMAIL} to manage matches.`);
+      return;
+    }
 
+    const safeMatchId = sanitizeId(matchToDelete.id, 'match');
     try {
-      const res = await fetch(`/api/events/${encodeURIComponent(deletedId)}`, {
-        method: 'DELETE',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (!res.ok) {
-        showToast('⚠️ Failed to delete match.');
-        return;
-      }
-      setEvents((prev) => prev.filter((e) => e.id !== deletedId));
+      await deleteDoc(doc(db, 'matches', safeMatchId));
       setMatchToDelete(null);
-      showToast('🗑️ Match listing removed.');
-    } catch {
-      showToast('⚠️ Network error while removing match.');
+      showToast('🗑️ Match listing removed from all client pages.');
+    } catch (error) {
+      showToast('⚠️ Failed to delete match.');
+      handleFirestoreError(error, OperationType.DELETE, `matches/${safeMatchId}`);
     }
   };
 
+  // Host Admin publishes a new match with pitch photo & spot limit to Firestore
   const handleCreateMatch = async (createdMatch: MatchEvent) => {
-    const token = getStoredAdminToken();
+    if (!isFirebaseAdminUser) {
+      showToast(`⚠️ Sign in as ${BOOTSTRAPPED_ADMIN_EMAIL} to publish matches.`);
+      return;
+    }
+
+    const clean = buildValidMatchFields({
+      ...createdMatch,
+      verified_spots: 0,
+      pending_spots: 0,
+    });
+
     try {
-      const res = await fetch('/api/events', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify(createdMatch),
+      await setDoc(doc(db, 'matches', clean.id), {
+        ...clean,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
-      const data = (await res.json()) as { ok?: boolean; event?: MatchEvent; error?: string };
-      if (!res.ok || !data.event) {
-        showToast(`⚠️ ${data.error || 'Could not publish match.'}`);
-        return;
-      }
-      setEvents((prev) =>
-        prev.some((e) => e.id === data.event!.id) ? prev : [data.event!, ...prev]
-      );
-      showToast('⚽ Match published live!');
+      showToast('⚽ Match published live to all client pages!');
       setAdminTab('games');
-    } catch {
-      showToast('⚠️ Network error while publishing match.');
+    } catch (error) {
+      showToast('⚠️ Failed to publish match.');
+      handleFirestoreError(error, OperationType.CREATE, `matches/${clean.id}`);
     }
   };
 
+  // Host Admin adjusts match booking limit in Firestore
   const handleUpdateMatchLimit = async (eventId: string, newLimit: number) => {
-    const token = getStoredAdminToken();
+    if (!isFirebaseAdminUser) {
+      showToast(`⚠️ Sign in as ${BOOTSTRAPPED_ADMIN_EMAIL} to update limits.`);
+      return;
+    }
+
+    const target = events.find((e) => e.id === eventId);
+    if (!target) return;
+
+    const capacity = getMatchCapacity(target, bookings);
+    const minAllowed = Math.max(1, capacity.verifiedSpots + capacity.pendingSpots);
+    if (newLimit < minAllowed) {
+      showToast(`⚠️ Limit cannot be lower than active spots (${minAllowed}).`);
+      return;
+    }
+
+    const nextLimit = Math.min(200, Math.round(newLimit));
+    const safeMatchId = sanitizeId(eventId, 'match');
+
     try {
-      const res = await fetch(`/api/events/${encodeURIComponent(eventId)}/limit`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ total_spots: newLimit }),
+      await updateDoc(doc(db, 'matches', safeMatchId), {
+        total_spots: nextLimit,
+        updatedAt: serverTimestamp(),
       });
-      const data = (await res.json()) as { ok?: boolean; event?: MatchEvent; error?: string };
-      if (res.ok && data.event) {
-        setEvents((prev) => prev.map((e) => (e.id === eventId ? data.event! : e)));
-      }
-    } catch {
+    } catch (error) {
       showToast('⚠️ Failed to update booking limit.');
+      handleFirestoreError(error, OperationType.UPDATE, `matches/${safeMatchId}`);
     }
   };
 
   const handleSaveProfile = (updatedProfile: UserProfile) => {
     setUserProfile(updatedProfile);
+    setBookingPlayerName(updatedProfile.name);
+    setBookingPlayerPhone(updatedProfile.phone);
     showToast('Profile details saved!');
   };
 
@@ -646,15 +960,9 @@ export function App() {
   }, [bookings, approvalFilter]);
 
   const myBookings = useMemo(() => {
-    return bookings.filter(
-      (b) => b.player_phone === userProfile.phone || b.player_name === userProfile.name
-    );
-  }, [bookings, userProfile]);
-
-  const pendingCount = useMemo(
-    () => bookings.filter((b) => b.status === 'pending').length,
-    [bookings]
-  );
+    if (!firebaseUser) return [];
+    return bookings.filter((b) => b.ownerId === firebaseUser.uid);
+  }, [bookings, firebaseUser]);
 
   // Dedicated password-locked /admin/login & /admin route handling
   if (isAdminRoute) {
@@ -692,23 +1000,24 @@ export function App() {
           </div>
         )}
 
-        {/* Real-time Incoming Payment Pending Popups */}
+        {/* Real-time Incoming Payment Pending Notification Cards */}
         {liveAdminAlerts.length > 0 && (
-          <div className="fixed bottom-5 right-5 z-50 w-full max-w-sm space-y-2 px-4 sm:px-0">
+          <div className="fixed bottom-5 right-5 z-50 w-full max-w-md space-y-2.5 px-4 sm:px-0">
             {liveAdminAlerts.map((alertItem) => (
               <div
                 key={alertItem.id}
-                className="bg-[#0E1526] border-2 border-[#00E676] rounded-2xl p-4 shadow-2xl flex items-start gap-3"
+                className="bg-[#0E1526] border-2 border-[#00E676] rounded-2xl p-4 shadow-2xl flex items-start gap-3.5"
               >
                 <img
+                  onClick={() => setViewReceiptModal(alertItem.screenshot_url)}
                   src={alertItem.screenshot_url}
                   alt="Receipt"
-                  className="w-12 h-12 rounded-xl object-cover border border-[#00E676]/50 shrink-0"
+                  className="w-14 h-14 rounded-xl object-cover border border-[#00E676]/60 shrink-0 cursor-pointer"
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-[10px] font-black uppercase tracking-wider text-[#00E676]">
-                      🔔 New Payment Pending
+                      🔔 New Client Payment Pending
                     </span>
                     <button
                       type="button"
@@ -723,18 +1032,25 @@ export function App() {
                   <p className="text-xs font-extrabold text-white truncate mt-0.5">
                     {alertItem.player_name} • {alertItem.amount} ETB ({alertItem.payment_method})
                   </p>
-                  <p className="text-[11px] text-slate-400 truncate">{alertItem.match_title}</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAdminTab('approvals');
-                      setApprovalFilter('pending');
-                      setLiveAdminAlerts((prev) => prev.filter((a) => a.id !== alertItem.id));
-                    }}
-                    className="mt-2 px-3 py-1 rounded-lg bg-[#00E676] text-black font-extrabold text-[11px] cursor-pointer hover:bg-[#00c965]"
-                  >
-                    Review Now →
-                  </button>
+                  <p className="text-[11px] text-slate-300 truncate">{alertItem.match_title}</p>
+                  <div className="flex items-center gap-2 mt-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleUpdatePaymentStatus(alertItem.id, alertItem.event_id, 'approved')
+                      }
+                      className="px-3 py-1.5 rounded-lg bg-[#00E676] text-black font-extrabold text-[11px] cursor-pointer hover:bg-[#00c965]"
+                    >
+                      Approve ✓
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setViewReceiptModal(alertItem.screenshot_url)}
+                      className="px-3 py-1.5 rounded-lg bg-[#111A2E] text-slate-200 border border-[#1E2D4A] font-bold text-[11px] cursor-pointer hover:bg-[#16233B]"
+                    >
+                      View Receipt
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -757,17 +1073,24 @@ export function App() {
                   GG<span className="text-[#00E676]">meets</span> Admin
                 </span>
                 <span className="text-[10px] text-[#00E676] font-bold tracking-wider uppercase">
-                  🔓 Live Sync Active
+                  {isFirebaseAdminUser ? '● Firebase Live Sync Active' : '○ Connect Host Google'}
                 </span>
               </div>
             </div>
 
             <div className="flex items-center gap-2 flex-wrap justify-end">
+              <button
+                type="button"
+                onClick={() => handleCopyText(getPublicClientUrl(), 'Public Client Link')}
+                className="px-3 py-2 rounded-xl bg-[#00E676]/15 hover:bg-[#00E676]/25 text-[#00E676] border border-[#00E676]/30 text-xs font-extrabold transition cursor-pointer"
+              >
+                🔗 Copy Client Link
+              </button>
               {browserNotifPermission !== 'granted' ? (
                 <button
                   type="button"
                   onClick={handleRequestBrowserNotifications}
-                  className="px-3 py-2 rounded-xl bg-[#00E676]/15 hover:bg-[#00E676]/25 text-[#00E676] border border-[#00E676]/30 text-xs font-bold transition cursor-pointer"
+                  className="px-3 py-2 rounded-xl bg-[#111A2E] hover:bg-[#16233B] text-slate-200 border border-[#1E2D4A] text-xs font-bold transition cursor-pointer"
                 >
                   🔔 Enable Alerts
                 </button>
@@ -781,7 +1104,7 @@ export function App() {
                 onClick={() => navigate('/')}
                 className="px-3 py-2 rounded-xl bg-[#111A2E] hover:bg-[#16233B] text-slate-300 border border-[#1E2D4A] text-xs font-bold transition cursor-pointer"
               >
-                ← Public Site
+                ← Client Page
               </button>
               {!isEnvManagedPassword && (
                 <button
@@ -797,28 +1120,76 @@ export function App() {
                 onClick={handleLockAdmin}
                 className="px-3 py-2 rounded-xl bg-amber-400/15 hover:bg-amber-400/25 text-amber-300 border border-amber-400/30 text-xs font-extrabold transition cursor-pointer"
               >
-                🔒 Lock Page
+                🔒 Lock
               </button>
             </div>
           </div>
         </header>
 
-        <AdminView
-          adminTab={adminTab}
-          setAdminTab={setAdminTab}
-          approvalFilter={approvalFilter}
-          setApprovalFilter={setApprovalFilter}
-          filteredAdminBookings={filteredAdminBookings}
-          allBookings={bookings}
-          pendingCount={pendingCount}
-          events={events}
-          onUpdatePaymentStatus={handleUpdatePaymentStatus}
-          onCreateMatch={handleCreateMatch}
-          onUpdateMatchLimit={handleUpdateMatchLimit}
-          onRequestDeleteMatch={(match) => setMatchToDelete(match)}
-          onViewReceipt={(url) => setViewReceiptModal(url)}
-          onFileUpload={handleFileUpload}
-        />
+        {!isFirebaseAdminUser ? (
+          <main className="flex-1 max-w-xl mx-auto px-4 sm:px-6 py-14 w-full flex items-center justify-center">
+            <div className="bg-[#0E1526] border border-[#1A263D] rounded-3xl p-8 w-full text-center space-y-5 shadow-2xl">
+              <div className="w-14 h-14 mx-auto rounded-2xl bg-[#00E676]/15 border border-[#00E676]/30 flex items-center justify-center text-2xl">
+                ⚡
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-2xl font-extrabold text-white">
+                  Connect Host Cloud Sync
+                </h2>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Sign in with your verified host Google account (
+                  <strong className="text-slate-200">{BOOTSTRAPPED_ADMIN_EMAIL}</strong>) so
+                  matches you post and client payment receipts sync live across every phone and
+                  browser.
+                </p>
+              </div>
+
+              {firebaseUser && !isFirebaseAdminUser && (
+                <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/30 text-xs text-red-300 space-y-2">
+                  <p>
+                    Signed in as <strong>{firebaseUser.email}</strong>, which is not the host admin
+                    account.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignOut}
+                    className="px-3 py-1.5 rounded-lg bg-[#111A2E] text-white font-bold text-[11px] border border-[#1E2D4A] cursor-pointer"
+                  >
+                    Switch Google Account
+                  </button>
+                </div>
+              )}
+
+              <button
+                type="button"
+                disabled={isSigningInGoogle}
+                onClick={handleGoogleSignIn}
+                className="w-full py-4 rounded-2xl bg-[#00E676] hover:bg-[#00c965] text-black font-extrabold text-xs uppercase tracking-wider shadow-xl shadow-[#00E676]/20 transition cursor-pointer disabled:opacity-60"
+              >
+                {isSigningInGoogle
+                  ? 'Connecting Google...'
+                  : `Connect with Google (${BOOTSTRAPPED_ADMIN_EMAIL}) →`}
+              </button>
+            </div>
+          </main>
+        ) : (
+          <AdminView
+            adminTab={adminTab}
+            setAdminTab={setAdminTab}
+            approvalFilter={approvalFilter}
+            setApprovalFilter={setApprovalFilter}
+            filteredAdminBookings={filteredAdminBookings}
+            allBookings={bookings}
+            pendingCount={pendingCount}
+            events={events}
+            onUpdatePaymentStatus={handleUpdatePaymentStatus}
+            onCreateMatch={handleCreateMatch}
+            onUpdateMatchLimit={handleUpdateMatchLimit}
+            onRequestDeleteMatch={(match) => setMatchToDelete(match)}
+            onViewReceipt={(url) => setViewReceiptModal(url)}
+            onFileUpload={handleFileUpload}
+          />
+        )}
 
         {viewReceiptModal && (
           <ReceiptZoomModal
@@ -860,7 +1231,19 @@ export function App() {
         userProfile={userProfile}
       />
 
-      {currentView === 'home' && <HomeView setCurrentView={setCurrentView} />}
+      {currentView === 'home' && (
+        <HomeView
+          events={events}
+          bookings={bookings}
+          setCurrentView={setCurrentView}
+          onOpenDetail={(event) => setDetailModalEventId(event.id)}
+          onOpenBooking={(event) => {
+            setSelectedEventId(event.id);
+            setReceiptFilePreview(null);
+            setBookingModalOpen(true);
+          }}
+        />
+      )}
 
       {currentView === 'events' && (
         <EventsView
@@ -883,6 +1266,8 @@ export function App() {
         <MyPassesView
           bookings={myBookings}
           events={events}
+          firebaseUser={firebaseUser}
+          onGoogleSignIn={handleGoogleSignIn}
           setCurrentView={setCurrentView}
           onViewReceipt={(url) => setViewReceiptModal(url)}
         />
@@ -900,11 +1285,17 @@ export function App() {
         <BookingModal
           event={selectedEvent}
           bookings={bookings}
+          firebaseUser={firebaseUser}
+          onGoogleSignIn={handleGoogleSignIn}
+          playerName={bookingPlayerName}
+          setPlayerName={setBookingPlayerName}
+          playerPhone={bookingPlayerPhone}
+          setPlayerPhone={setBookingPlayerPhone}
           paymentMethod={paymentMethod}
           setPaymentMethod={setPaymentMethod}
           receiptFilePreview={receiptFilePreview}
           onFileUpload={(e) => handleFileUpload(e, setReceiptFilePreview)}
-          onCopyText={handleCopyText}
+          onCopyText={(text, label) => handleCopyText(text, `${label} account number`)}
           onSubmit={handleClientBookingSubmit}
           isSubmitting={isSubmittingBooking}
           onClose={() => setBookingModalOpen(false)}

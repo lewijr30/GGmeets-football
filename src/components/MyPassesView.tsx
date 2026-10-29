@@ -1,9 +1,12 @@
+import type { User } from 'firebase/auth';
 import React from 'react';
 import { AppView, Booking, MatchEvent } from '../types';
 
 interface MyPassesViewProps {
   bookings: Booking[];
   events: MatchEvent[];
+  firebaseUser: User | null;
+  onGoogleSignIn: () => Promise<void>;
   setCurrentView: (view: AppView) => void;
   onViewReceipt: (url: string) => void;
 }
@@ -11,6 +14,8 @@ interface MyPassesViewProps {
 export const MyPassesView: React.FC<MyPassesViewProps> = ({
   bookings,
   events,
+  firebaseUser,
+  onGoogleSignIn,
   setCurrentView,
   onViewReceipt,
 }) => {
@@ -29,7 +34,30 @@ export const MyPassesView: React.FC<MyPassesViewProps> = ({
         </button>
       </div>
 
-      {bookings.length === 0 ? (
+      {!firebaseUser ? (
+        <div className="p-12 text-center bg-[#0E1526] rounded-3xl border border-[#1A263D] space-y-4">
+          <div className="text-5xl">🔐</div>
+          <h3 className="text-xl font-bold text-white">Sign in to View Your Passes</h3>
+          <p className="text-slate-400 text-xs max-w-sm mx-auto leading-relaxed">
+            Connect with Google to view your live match passes and real-time payment verification
+            updates from the host.
+          </p>
+          <div className="flex items-center justify-center gap-3 pt-2 flex-wrap">
+            <button
+              onClick={onGoogleSignIn}
+              className="px-6 py-3 rounded-xl bg-[#00E676] text-black font-extrabold text-xs uppercase cursor-pointer hover:bg-[#00c965]"
+            >
+              Continue with Google →
+            </button>
+            <button
+              onClick={() => setCurrentView('events')}
+              className="px-5 py-3 rounded-xl bg-[#111A2E] text-slate-300 border border-[#1E2D4A] font-bold text-xs cursor-pointer hover:bg-[#16233B]"
+            >
+              Browse Matches
+            </button>
+          </div>
+        </div>
+      ) : bookings.length === 0 ? (
         <div className="p-12 text-center bg-[#0E1526] rounded-3xl border border-[#1A263D] space-y-4">
           <div className="text-5xl">🎟️</div>
           <h3 className="text-xl font-bold text-white">No Match Passes Yet</h3>

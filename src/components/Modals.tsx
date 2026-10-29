@@ -1,3 +1,4 @@
+import type { User } from 'firebase/auth';
 import React from 'react';
 import { PAYMENT_INFO } from '../constants/data';
 import { Booking, MatchEvent, PaymentMethod } from '../types';
@@ -7,6 +8,12 @@ import { SpotTracker } from './SpotTracker';
 interface BookingModalProps {
   event: MatchEvent;
   bookings: Booking[];
+  firebaseUser: User | null;
+  onGoogleSignIn: () => Promise<void>;
+  playerName: string;
+  setPlayerName: (val: string) => void;
+  playerPhone: string;
+  setPlayerPhone: (val: string) => void;
   paymentMethod: PaymentMethod;
   setPaymentMethod: (method: PaymentMethod) => void;
   receiptFilePreview: string | null;
@@ -20,6 +27,12 @@ interface BookingModalProps {
 export const BookingModal: React.FC<BookingModalProps> = ({
   event,
   bookings,
+  firebaseUser,
+  onGoogleSignIn,
+  playerName,
+  setPlayerName,
+  playerPhone,
+  setPlayerPhone,
   paymentMethod,
   setPaymentMethod,
   receiptFilePreview,
@@ -71,11 +84,63 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               Close
             </button>
           </div>
+        ) : !firebaseUser ? (
+          <div className="p-6 rounded-2xl bg-[#080D1A] border border-[#1E2D4A] text-center space-y-4">
+            <div className="text-3xl">🎟️</div>
+            <div className="space-y-1">
+              <h5 className="text-base font-extrabold text-white">
+                Sign in to Reserve Your Digital Pass
+              </h5>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                Connect with Google so your verified pitch pass syncs privately to your phone and
+                the host receives your payment notification immediately.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onGoogleSignIn}
+              className="w-full py-3.5 rounded-2xl bg-[#00E676] hover:bg-[#00c965] text-black font-extrabold text-xs uppercase tracking-wider shadow-xl shadow-[#00E676]/20 transition cursor-pointer"
+            >
+              Continue with Google →
+            </button>
+          </div>
         ) : (
-          <form onSubmit={onSubmit} className="space-y-5">
+          <form onSubmit={onSubmit} className="space-y-4">
             <div className="bg-[#080D1A] p-4 rounded-2xl flex justify-between items-center border border-[#1E2D4A]">
               <span className="text-xs text-slate-300 font-semibold">Amount to Pay:</span>
               <span className="text-[#00E676] font-black text-lg">{event.price} ETB</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                  Your Full Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={80}
+                  value={playerName}
+                  onChange={(e) => setPlayerName(e.target.value)}
+                  placeholder="e.g. Yared Tadesse"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                  Phone Number
+                </label>
+                <input
+                  type="tel"
+                  required
+                  minLength={3}
+                  maxLength={30}
+                  value={playerPhone}
+                  onChange={(e) => setPlayerPhone(e.target.value)}
+                  placeholder="e.g. 0911 23 45 67"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
+                />
+              </div>
             </div>
 
             <div>
@@ -160,7 +225,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               disabled={isSubmitting}
               className="w-full py-4 rounded-2xl bg-[#00E676] text-black font-extrabold text-xs uppercase hover:bg-[#00c965] shadow-xl shadow-[#00E676]/25 transition cursor-pointer disabled:opacity-60"
             >
-              {isSubmitting ? 'Submitting...' : 'Send Receipt & Confirm Spot'}
+              {isSubmitting ? 'Submitting to Host...' : 'Send Receipt & Confirm Spot'}
             </button>
           </form>
         )}

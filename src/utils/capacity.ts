@@ -10,10 +10,32 @@ export interface MatchCapacityInfo {
   percentFilled: number;
 }
 
-export function getMatchCapacity(event: MatchEvent, bookings: Booking[]): MatchCapacityInfo {
-  const totalSpots = Math.max(1, Number(event.total_spots) || 10);
-  const baseBooked = Math.max(0, Number(event.booked_spots) || 0);
+export function getMatchCapacity(event: MatchEvent, bookings: Booking[] = []): MatchCapacityInfo {
+  const totalSpots = Math.max(1, Math.round(Number(event.total_spots) || 10));
 
+  if (typeof event.verified_spots === 'number' && typeof event.pending_spots === 'number') {
+    const verifiedSpots = Math.min(totalSpots, Math.max(0, Math.round(event.verified_spots)));
+    const pendingSpots = Math.min(
+      Math.max(0, totalSpots - verifiedSpots),
+      Math.max(0, Math.round(event.pending_spots))
+    );
+    const takenSpots = Math.min(totalSpots, verifiedSpots + pendingSpots);
+    const spotsLeft = Math.max(0, totalSpots - takenSpots);
+    const isFull = spotsLeft <= 0;
+    const percentFilled = Math.min(100, Math.round((takenSpots / totalSpots) * 100));
+
+    return {
+      totalSpots,
+      verifiedSpots,
+      pendingSpots,
+      takenSpots,
+      spotsLeft,
+      isFull,
+      percentFilled,
+    };
+  }
+
+  const baseBooked = Math.max(0, Number(event.booked_spots) || 0);
   let approvedCount = 0;
   let pendingCount = 0;
 

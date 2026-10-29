@@ -29,6 +29,10 @@ export interface MatchEvent {
   price: number;
   total_spots: number;
   booked_spots: number;
+  verified_spots?: number;
+  pending_spots?: number;
+  visibility?: 'public';
+  lastBookingId?: string;
   image_url: string;
   description: string;
   amenities: string[];
@@ -36,6 +40,7 @@ export interface MatchEvent {
 
 export interface Booking {
   id: string;
+  ownerId?: string;
   event_id: string;
   match_title: string;
   match_date?: string;

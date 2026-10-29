@@ -1,11 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import type { Request, Response } from 'express';
-import { WebSocket, WebSocketServer } from 'ws';
 import { DEFAULT_BOOKINGS, DEFAULT_GAMES } from './src/constants/data.ts';
 import type { Booking, BookingStatus, MatchEvent } from './src/types.ts';
 
@@ -180,43 +178,69 @@ function verifyToken(authHeader: string | undefined): boolean {
 
 async function startServer() {
   const store = loadAppStore();
-  const app = express();
-  const httpServer = http.createServer(app);
-  const wss = new WebSocketServer({ noServer: true });
+  let stateVersion = Date.now();
 
-  const broadcast = (message: Record<string, unknown>) => {
-    const serialized = JSON.stringify(message);
-    for (const client of wss.clients) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(serialized);
+  const app = express();
+  const sseClients = new Set<Response>();
+
+  const notifyAllClients = () => {
+    stateVersion = Date.now();
+    const payload = `data: ${JSON.stringify({ version: stateVersion })}\n\n`;
+    for (const clientRes of sseClients) {
+      try {
+        clientRes.write(payload);
+      } catch {
+        sseClients.delete(clientRes);
       }
     }
   };
 
-  httpServer.on('upgrade', (req, socket, head) => {
-    const url = req.url || '';
-    if (url === '/ws' || url.startsWith('/ws?')) {
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        wss.emit('connection', ws, req);
-      });
+  app.use(express.json({ limit: '20mb' }));
+
+  // Prevent proxy or browser caching on all /api routes
+  app.use('/api', (_req: Request, res: Response, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    next();
+  });
+
+  // Server-Sent Events stream for instant push over standard HTTP
+  app.get('/api/stream', (req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    res.write(`data: ${JSON.stringify({ version: stateVersion })}\n\n`);
+    sseClients.add(res);
+
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(': ping\n\n');
+      } catch {
+        clearInterval(heartbeat);
+        sseClients.delete(res);
+      }
+    }, 20000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    });
+  });
+
+  // Versioned state endpoint (ultra-lightweight 30-byte check when unchanged)
+  app.get('/api/state', (req: Request, res: Response) => {
+    const clientSince = String(req.query.since || '');
+    if (clientSince && clientSince === String(stateVersion)) {
+      res.json({ unchanged: true, version: stateVersion });
+      return;
     }
-  });
-
-  wss.on('connection', (ws) => {
-    ws.send(
-      JSON.stringify({
-        type: 'state:sync',
-        events: store.events,
-        bookings: store.bookings,
-      })
-    );
-  });
-
-  app.use(express.json({ limit: '15mb' }));
-
-  // Shared state API
-  app.get('/api/state', (_req: Request, res: Response) => {
     res.json({
+      unchanged: false,
+      version: stateVersion,
       events: store.events,
       bookings: store.bookings,
     });
@@ -245,7 +269,7 @@ async function startServer() {
     }
 
     const newBooking: Booking = {
-      id: body.id || `b-${Date.now()}`,
+      id: body.id || `b-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       event_id: targetEvent.id,
       match_title: targetEvent.title,
       match_date: targetEvent.date,
@@ -263,10 +287,14 @@ async function startServer() {
     if (!store.bookings.some((b) => b.id === newBooking.id)) {
       store.bookings.unshift(newBooking);
       saveAppStore(store);
-      broadcast({ type: 'booking:created', booking: newBooking });
+      notifyAllClients();
     }
 
-    res.status(201).json({ ok: true, booking: newBooking });
+    res.status(201).json({
+      ok: true,
+      version: stateVersion,
+      booking: newBooking,
+    });
   });
 
   // Admin: update payment approval/rejection status
@@ -291,8 +319,8 @@ async function startServer() {
 
     booking.status = status;
     saveAppStore(store);
-    broadcast({ type: 'booking:updated', booking });
-    res.json({ ok: true, booking });
+    notifyAllClients();
+    res.json({ ok: true, version: stateVersion, booking });
   });
 
   // Admin: create new match with custom cover photo and booking limit
@@ -331,10 +359,10 @@ async function startServer() {
     if (!store.events.some((e) => e.id === newEvent.id)) {
       store.events.unshift(newEvent);
       saveAppStore(store);
-      broadcast({ type: 'event:created', event: newEvent });
+      notifyAllClients();
     }
 
-    res.status(201).json({ ok: true, event: newEvent });
+    res.status(201).json({ ok: true, version: stateVersion, event: newEvent });
   });
 
   // Admin: update match booking limit
@@ -360,8 +388,8 @@ async function startServer() {
 
     target.total_spots = Math.round(nextLimit);
     saveAppStore(store);
-    broadcast({ type: 'event:updated', event: target });
-    res.json({ ok: true, event: target });
+    notifyAllClients();
+    res.json({ ok: true, version: stateVersion, event: target });
   });
 
   // Admin: delete match
@@ -374,8 +402,8 @@ async function startServer() {
     const eventId = String(req.params.id);
     store.events = store.events.filter((e) => String(e.id) !== eventId);
     saveAppStore(store);
-    broadcast({ type: 'event:deleted', eventId });
-    res.json({ ok: true });
+    notifyAllClients();
+    res.json({ ok: true, version: stateVersion });
   });
 
   // Admin password lock endpoints
@@ -474,7 +502,7 @@ async function startServer() {
   }
 
   const port = Number(process.env.PORT) || 3000;
-  httpServer.listen(port, '0.0.0.0', () => {
+  app.listen(port, '0.0.0.0', () => {
     console.log(`GGmeets server listening on http://0.0.0.0:${port}`);
   });
 }
