@@ -85,7 +85,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className="w-8 h-8 rounded-full object-cover border border-[#00E676]/50"
             />
             <span className="text-xs font-bold text-white hidden sm:inline">
-              {userProfile.name.split(' ')[0]}
+              {userProfile.name.trim() ? userProfile.name.trim().split(' ')[0] : 'Profile'}
             </span>
           </div>
         </div>

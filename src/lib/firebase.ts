@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { GoogleAuthProvider, getAuth } from 'firebase/auth';
+import { getAuth } from 'firebase/auth';
 import { Timestamp, doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { Booking, BookingStatus, MatchEvent, PaymentMethod } from '../types';
@@ -15,12 +15,10 @@ export const MAX_PLAYER_NAME_LENGTH = 80;
 export const MAX_PHONE_LENGTH = 30;
 export const MAX_DESCRIPTION_LENGTH = 1000;
 export const MAX_IMAGE_LENGTH = 700000;
-export const BOOTSTRAPPED_ADMIN_EMAIL = 'lewijunior80@gmail.com';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
-export const googleProvider = new GoogleAuthProvider();
 
 export enum OperationType {
   CREATE = 'create',
@@ -86,14 +84,6 @@ async function testConnection() {
 
 testConnection();
 
-export function sanitizeId(raw: string, prefix = 'id'): string {
-  const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, MAX_ID_LENGTH);
-  if (cleaned.length >= 1 && VALID_ID_REGEX.test(cleaned)) {
-    return cleaned;
-  }
-  return `${prefix}-${Date.now()}`;
-}
-
 export function formatFirestoreTime(ts: unknown): string {
   if (ts instanceof Timestamp) {
     return ts.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -118,7 +108,7 @@ export function docToMatchEvent(data: Record<string, unknown>): MatchEvent {
     booked_spots: verifiedSpots,
     verified_spots: verifiedSpots,
     pending_spots: pendingSpots,
-    visibility: 'public',
+    visibility: 'live',
     lastBookingId: String(data.lastBookingId || 'init'),
     image_url: String(
       data.image_url || 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=700'
@@ -134,7 +124,7 @@ export function docToBooking(data: Record<string, unknown>): Booking {
 
   return {
     id: String(data.id || ''),
-    ownerId: data.ownerId ? String(data.ownerId) : undefined,
+    passId: data.passId ? String(data.passId) : undefined,
     event_id: String(data.event_id || ''),
     match_title: String(data.match_title || 'Pickup Match'),
     match_date: data.match_date ? String(data.match_date) : undefined,

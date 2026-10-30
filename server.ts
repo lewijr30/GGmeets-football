@@ -4,13 +4,37 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import type { Request, Response } from 'express';
-import { DEFAULT_BOOKINGS, DEFAULT_GAMES } from './src/constants/data.ts';
-import type { Booking, BookingStatus, MatchEvent } from './src/types.ts';
+import { initializeApp } from 'firebase/app';
+import {
+  doc,
+  getDoc,
+  getFirestore,
+  serverTimestamp,
+  writeBatch,
+} from 'firebase/firestore/lite';
+import type { Booking, BookingStatus, MatchEvent, PaymentMethod } from './src/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const AUTH_FILE_PATH = path.join(__dirname, '.admin-auth.json');
-const STORE_FILE_PATH = path.join(__dirname, '.ggmeets-store.json');
+const FIREBASE_CONFIG_PATH = path.join(__dirname, 'firebase-applet-config.json');
+
+interface FirebaseAppletConfig {
+  projectId: string;
+  appId: string;
+  apiKey: string;
+  authDomain: string;
+  firestoreDatabaseId: string;
+  storageBucket?: string;
+  messagingSenderId?: string;
+}
+
+const firebaseConfig = JSON.parse(
+  fs.readFileSync(FIREBASE_CONFIG_PATH, 'utf-8')
+) as FirebaseAppletConfig;
+
+const firebaseServerApp = initializeApp(firebaseConfig, 'ggmeets-server');
+const serverDb = getFirestore(firebaseServerApp, firebaseConfig.firestoreDatabaseId);
 
 interface StoredAdminAuth {
   salt: string;
@@ -18,58 +42,25 @@ interface StoredAdminAuth {
   secret: string;
 }
 
-interface AppDataStore {
-  events: MatchEvent[];
-  bookings: Booking[];
-}
-
 const runtimeFallbackSecret = crypto.randomBytes(32).toString('hex');
+const VALID_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 
-function loadAppStore(): AppDataStore {
-  try {
-    if (fs.existsSync(STORE_FILE_PATH)) {
-      const raw = fs.readFileSync(STORE_FILE_PATH, 'utf-8');
-      const parsed = JSON.parse(raw) as Partial<AppDataStore>;
-      if (Array.isArray(parsed.events) && Array.isArray(parsed.bookings)) {
-        return {
-          events: parsed.events,
-          bookings: parsed.bookings,
-        };
-      }
-    }
-  } catch (err) {
-    console.warn('Failed to load store file, using defaults:', err);
+function sanitizeId(raw: string, prefix = 'id'): string {
+  const cleaned = String(raw || '')
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 128);
+  if (cleaned.length >= 1 && VALID_ID_REGEX.test(cleaned)) {
+    return cleaned;
   }
-  const initial: AppDataStore = {
-    events: [...DEFAULT_GAMES],
-    bookings: [...DEFAULT_BOOKINGS],
-  };
-  saveAppStore(initial);
-  return initial;
+  return `${prefix}-${Date.now()}`;
 }
 
-function saveAppStore(store: AppDataStore) {
-  try {
-    fs.writeFileSync(STORE_FILE_PATH, JSON.stringify(store, null, 2));
-  } catch (err) {
-    console.warn('Failed to persist store:', err);
-  }
+function makeOpId(): string {
+  return `op-${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
 }
 
-function computeSpotsLeft(event: MatchEvent, bookings: Booking[]): number {
-  const totalSpots = Math.max(1, Number(event.total_spots) || 10);
-  const baseBooked = Math.max(0, Number(event.booked_spots) || 0);
-
-  let activeBookingCount = 0;
-  for (const b of bookings) {
-    if (String(b.event_id) !== String(event.id)) continue;
-    if (b.status === 'approved' || b.status === 'pending') {
-      activeBookingCount += 1;
-    }
-  }
-
-  const takenSpots = Math.min(totalSpots, baseBooked + activeBookingCount);
-  return Math.max(0, totalSpots - takenSpots);
+function makePassId(): string {
+  return `pass-${Date.now()}-${crypto.randomBytes(12).toString('hex')}`;
 }
 
 function readStoredAuth(): StoredAdminAuth | null {
@@ -109,6 +100,70 @@ function isPasswordConfigured(): boolean {
   return Boolean(getEnvPassword() || readStoredAuth());
 }
 
+function getAdminInboxKey(): string | null {
+  const envPass = getEnvPassword();
+  if (envPass !== null) {
+    const hex = crypto
+      .createHmac('sha256', envPass)
+      .update('ggmeets-telegram-admin-v1')
+      .digest('hex')
+      .slice(0, 48);
+    return `adm-${hex}`;
+  }
+  const stored = readStoredAuth();
+  if (stored) {
+    const hex = crypto
+      .createHmac('sha256', stored.hash)
+      .update('ggmeets-telegram-admin-v1')
+      .digest('hex')
+      .slice(0, 48);
+    return `adm-${hex}`;
+  }
+  return null;
+}
+
+let registeredInboxKeyCache: string | null = null;
+
+async function ensureAdminKeyRegistered(inboxKey: string, previousKey?: string | null) {
+  if (registeredInboxKeyCache === inboxKey) return;
+
+  const keyRef = doc(serverDb, 'admin_keys', inboxKey);
+  const existingSnap = await getDoc(keyRef);
+  if (existingSnap.exists()) {
+    registeredInboxKeyCache = inboxKey;
+    return;
+  }
+
+  const batch = writeBatch(serverDb);
+  if (previousKey && previousKey !== inboxKey) {
+    const opId = makeOpId();
+    batch.set(doc(serverDb, 'admin_ops', opId), {
+      id: opId,
+      adminKey: previousKey,
+      action: 'rotate_key',
+      createdAt: serverTimestamp(),
+    });
+    batch.set(keyRef, {
+      id: inboxKey,
+      lastAdminOpId: opId,
+      createdAt: serverTimestamp(),
+    });
+  } else {
+    batch.set(doc(serverDb, 'config', 'admin_lock'), {
+      id: 'admin_lock',
+      locked: true,
+      createdAt: serverTimestamp(),
+    });
+    batch.set(keyRef, {
+      id: inboxKey,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  await batch.commit();
+  registeredInboxKeyCache = inboxKey;
+}
+
 function verifyPassword(candidate: string): boolean {
   const envPass = getEnvPassword();
   if (envPass !== null) {
@@ -141,7 +196,7 @@ function getSigningKey(): string {
 }
 
 function issueToken(): string {
-  const expiresAt = Date.now() + 12 * 60 * 60 * 1000;
+  const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
   const payload = Buffer.from(JSON.stringify({ exp: expiresAt })).toString('base64url');
   const sig = crypto.createHmac('sha256', getSigningKey()).update(payload).digest('base64url');
   return `${payload}.${sig}`;
@@ -177,27 +232,17 @@ function verifyToken(authHeader: string | undefined): boolean {
 }
 
 async function startServer() {
-  const store = loadAppStore();
-  let stateVersion = Date.now();
+  // Proactively register server admin key in Firestore on boot if password is configured
+  const bootInboxKey = getAdminInboxKey();
+  if (bootInboxKey) {
+    ensureAdminKeyRegistered(bootInboxKey).catch((err) => {
+      console.warn('Initial Firestore admin key check warning:', err instanceof Error ? err.message : err);
+    });
+  }
 
   const app = express();
-  const sseClients = new Set<Response>();
-
-  const notifyAllClients = () => {
-    stateVersion = Date.now();
-    const payload = `data: ${JSON.stringify({ version: stateVersion })}\n\n`;
-    for (const clientRes of sseClients) {
-      try {
-        clientRes.write(payload);
-      } catch {
-        sseClients.delete(clientRes);
-      }
-    }
-  };
-
   app.use(express.json({ limit: '20mb' }));
 
-  // Prevent proxy or browser caching on all /api routes
   app.use('/api', (_req: Request, res: Response, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -205,216 +250,470 @@ async function startServer() {
     next();
   });
 
-  // Server-Sent Events stream for instant push over standard HTTP
-  app.get('/api/stream', (req: Request, res: Response) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders?.();
-
-    res.write(`data: ${JSON.stringify({ version: stateVersion })}\n\n`);
-    sseClients.add(res);
-
-    const heartbeat = setInterval(() => {
-      try {
-        res.write(': ping\n\n');
-      } catch {
-        clearInterval(heartbeat);
-        sseClients.delete(res);
+  // Public player booking submission -> atomic Firestore write across Match + Admin Inbox + Pass
+  app.post('/api/bookings', async (req: Request, res: Response) => {
+    try {
+      const inboxKey = getAdminInboxKey();
+      if (!inboxKey) {
+        res.status(503).json({
+          error: 'Host has not set up the Admin Panel yet. Please try again shortly.',
+        });
+        return;
       }
-    }, 20000);
 
-    req.on('close', () => {
-      clearInterval(heartbeat);
-      sseClients.delete(res);
-    });
-  });
+      await ensureAdminKeyRegistered(inboxKey);
 
-  // Versioned state endpoint (ultra-lightweight 30-byte check when unchanged)
-  app.get('/api/state', (req: Request, res: Response) => {
-    const clientSince = String(req.query.since || '');
-    if (clientSince && clientSince === String(stateVersion)) {
-      res.json({ unchanged: true, version: stateVersion });
-      return;
-    }
-    res.json({
-      unchanged: false,
-      version: stateVersion,
-      events: store.events,
-      bookings: store.bookings,
-    });
-  });
+      const body = (req.body || {}) as Partial<Booking>;
+      const rawName = String(body.player_name || '').trim().slice(0, 80);
+      const rawPhone = String(body.player_phone || '').trim().slice(0, 30);
+      const rawScreenshot = String(body.screenshot_url || '').slice(0, 700000);
 
-  // Public booking submission with strict server-side limit enforcement
-  app.post('/api/bookings', (req: Request, res: Response) => {
-    const body = (req.body || {}) as Partial<Booking>;
-    if (!body.event_id || !body.player_name || !body.screenshot_url) {
-      res.status(400).json({ error: 'Missing required booking details or receipt screenshot.' });
-      return;
-    }
+      if (!body.event_id || rawName.length < 1 || rawPhone.length < 3 || rawScreenshot.length < 10) {
+        res.status(400).json({
+          error: 'Please enter your full name, valid phone number, and upload your receipt screenshot.',
+        });
+        return;
+      }
 
-    const targetEvent = store.events.find((ev) => String(ev.id) === String(body.event_id));
-    if (!targetEvent) {
-      res.status(404).json({ error: 'Match not found.' });
-      return;
-    }
+      const matchId = sanitizeId(String(body.event_id), 'match');
+      const matchRef = doc(serverDb, 'matches', matchId);
+      const matchSnap = await getDoc(matchRef);
 
-    const spotsLeft = computeSpotsLeft(targetEvent, store.bookings);
-    if (spotsLeft <= 0) {
-      res.status(409).json({
-        error: 'Booking limit reached! All spots for this match are filled.',
+      if (!matchSnap.exists()) {
+        res.status(404).json({ error: 'Match not found or no longer available.' });
+        return;
+      }
+
+      const matchData = matchSnap.data() as Record<string, unknown>;
+      if (matchData.visibility !== 'live') {
+        res.status(404).json({ error: 'This match is no longer active.' });
+        return;
+      }
+
+      const totalSpots = Math.max(1, Math.round(Number(matchData.total_spots) || 10));
+      const verifiedSpots = Math.max(0, Math.round(Number(matchData.verified_spots) || 0));
+      const pendingSpots = Math.max(0, Math.round(Number(matchData.pending_spots) || 0));
+
+      if (verifiedSpots + pendingSpots >= totalSpots) {
+        res.status(409).json({
+          error: 'Booking limit reached! All spots for this match are filled.',
+        });
+        return;
+      }
+
+      const bookingId = sanitizeId(
+        `b-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+        'b'
+      );
+      const passId = makePassId();
+      const opId = makeOpId();
+
+      const matchTitle = String(matchData.title || 'Pickup Match').trim().slice(0, 120);
+      const matchDate = String(matchData.date || 'Today').trim().slice(0, 60);
+      const matchTime = String(matchData.time || 'TBA').trim().slice(0, 60);
+      const matchLocation = String(matchData.location || 'Addis Ababa').trim().slice(0, 160);
+      const amount = Math.max(0, Math.min(100000, Number(matchData.price) || 0));
+      const chosenMethod: PaymentMethod = body.payment_method === 'CBE' ? 'CBE' : 'Telebirr';
+
+      const batch = writeBatch(serverDb);
+
+      batch.set(doc(serverDb, 'admin_ops', opId), {
+        id: opId,
+        adminKey: inboxKey,
+        action: 'create_booking',
+        createdAt: serverTimestamp(),
       });
-      return;
+
+      batch.set(doc(serverDb, 'admin_inboxes', inboxKey, 'bookings', bookingId), {
+        id: bookingId,
+        inboxKey,
+        passId,
+        event_id: matchId,
+        match_title: matchTitle,
+        match_date: matchDate,
+        match_time: matchTime,
+        match_location: matchLocation,
+        player_name: rawName,
+        player_phone: rawPhone,
+        amount,
+        payment_method: chosenMethod,
+        status: 'pending',
+        screenshot_url: rawScreenshot,
+        lastAdminOpId: opId,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      batch.set(doc(serverDb, 'booking_passes', passId), {
+        id: passId,
+        bookingId,
+        event_id: matchId,
+        match_title: matchTitle,
+        match_date: matchDate,
+        match_time: matchTime,
+        match_location: matchLocation,
+        amount,
+        payment_method: chosenMethod,
+        status: 'pending',
+        lastAdminOpId: opId,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      batch.update(matchRef, {
+        pending_spots: pendingSpots + 1,
+        lastBookingId: bookingId,
+        lastAdminOpId: opId,
+        updatedAt: serverTimestamp(),
+      });
+
+      await batch.commit();
+
+      const createdBooking: Booking = {
+        id: bookingId,
+        passId,
+        event_id: matchId,
+        match_title: matchTitle,
+        match_date: matchDate,
+        match_time: matchTime,
+        match_location: matchLocation,
+        player_name: rawName,
+        player_phone: rawPhone,
+        amount,
+        payment_method: chosenMethod,
+        status: 'pending',
+        screenshot_url: rawScreenshot,
+        submitted_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      res.status(201).json({ ok: true, booking: createdBooking });
+    } catch (err) {
+      console.error('Booking creation error:', err);
+      res.status(500).json({ error: 'Unable to submit booking right now. Please try again.' });
     }
-
-    const newBooking: Booking = {
-      id: body.id || `b-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      event_id: targetEvent.id,
-      match_title: targetEvent.title,
-      match_date: targetEvent.date,
-      match_time: targetEvent.time,
-      match_location: targetEvent.location,
-      player_name: String(body.player_name).trim(),
-      player_phone: String(body.player_phone || '').trim(),
-      amount: targetEvent.price,
-      payment_method: body.payment_method === 'CBE' ? 'CBE' : 'Telebirr',
-      status: 'pending',
-      screenshot_url: String(body.screenshot_url),
-      submitted_at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-
-    if (!store.bookings.some((b) => b.id === newBooking.id)) {
-      store.bookings.unshift(newBooking);
-      saveAppStore(store);
-      notifyAllClients();
-    }
-
-    res.status(201).json({
-      ok: true,
-      version: stateVersion,
-      booking: newBooking,
-    });
   });
 
-  // Admin: update payment approval/rejection status
-  app.patch('/api/bookings/:id/status', (req: Request, res: Response) => {
+  // Admin: approve or reject player payment in Firestore
+  app.patch('/api/bookings/:id/status', async (req: Request, res: Response) => {
     if (!verifyToken(req.headers.authorization)) {
       res.status(401).json({ error: 'Unauthorized admin session.' });
       return;
     }
 
-    const bookingId = String(req.params.id);
-    const { status } = (req.body || {}) as { status?: BookingStatus };
-    if (status !== 'approved' && status !== 'rejected' && status !== 'pending') {
-      res.status(400).json({ error: 'Invalid booking status.' });
-      return;
-    }
+    try {
+      const inboxKey = getAdminInboxKey();
+      if (!inboxKey) {
+        res.status(500).json({ error: 'Admin inbox key not configured.' });
+        return;
+      }
+      await ensureAdminKeyRegistered(inboxKey);
 
-    const booking = store.bookings.find((b) => String(b.id) === bookingId);
-    if (!booking) {
-      res.status(404).json({ error: 'Booking not found.' });
-      return;
-    }
+      const bookingId = sanitizeId(String(req.params.id), 'b');
+      const { status } = (req.body || {}) as { status?: BookingStatus };
+      if (status !== 'approved' && status !== 'rejected' && status !== 'pending') {
+        res.status(400).json({ error: 'Invalid booking status.' });
+        return;
+      }
 
-    booking.status = status;
-    saveAppStore(store);
-    notifyAllClients();
-    res.json({ ok: true, version: stateVersion, booking });
+      const bookingRef = doc(serverDb, 'admin_inboxes', inboxKey, 'bookings', bookingId);
+      const bookingSnap = await getDoc(bookingRef);
+      if (!bookingSnap.exists()) {
+        res.status(404).json({ error: 'Booking not found.' });
+        return;
+      }
+
+      const bData = bookingSnap.data() as Record<string, unknown>;
+      const prevStatus = String(bData.status || 'pending') as BookingStatus;
+      const matchId = sanitizeId(String(bData.event_id || ''), 'match');
+      const passId = String(bData.passId || '');
+      const opId = makeOpId();
+
+      const matchRef = doc(serverDb, 'matches', matchId);
+      const matchSnap = await getDoc(matchRef);
+
+      const batch = writeBatch(serverDb);
+      batch.set(doc(serverDb, 'admin_ops', opId), {
+        id: opId,
+        adminKey: inboxKey,
+        action: `booking_${status}`,
+        createdAt: serverTimestamp(),
+      });
+
+      batch.update(bookingRef, {
+        status,
+        lastAdminOpId: opId,
+        updatedAt: serverTimestamp(),
+      });
+
+      if (passId.startsWith('pass-') && passId.length >= 20) {
+        batch.update(doc(serverDb, 'booking_passes', passId), {
+          status,
+          lastAdminOpId: opId,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      if (matchSnap.exists()) {
+        const m = matchSnap.data() as Record<string, unknown>;
+        const totalSpots = Math.max(1, Math.round(Number(m.total_spots) || 10));
+        let nextVerified = Math.max(0, Math.round(Number(m.verified_spots) || 0));
+        let nextPending = Math.max(0, Math.round(Number(m.pending_spots) || 0));
+
+        if (prevStatus === 'pending' && status === 'approved') {
+          nextPending = Math.max(0, nextPending - 1);
+          nextVerified = Math.min(totalSpots, nextVerified + 1);
+        } else if (prevStatus === 'pending' && status === 'rejected') {
+          nextPending = Math.max(0, nextPending - 1);
+        } else if (prevStatus === 'approved' && status === 'rejected') {
+          nextVerified = Math.max(0, nextVerified - 1);
+        }
+
+        if (nextVerified + nextPending > totalSpots) {
+          nextPending = Math.max(0, totalSpots - nextVerified);
+        }
+
+        batch.update(matchRef, {
+          verified_spots: nextVerified,
+          pending_spots: nextPending,
+          lastAdminOpId: opId,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+      res.json({ ok: true, status });
+    } catch (err) {
+      console.error('Status update error:', err);
+      res.status(500).json({ error: 'Could not update payment status.' });
+    }
   });
 
-  // Admin: create new match with custom cover photo and booking limit
-  app.post('/api/events', (req: Request, res: Response) => {
+  // Admin: publish a new match with custom cover photo and booking limit to Firestore
+  app.post('/api/events', async (req: Request, res: Response) => {
     if (!verifyToken(req.headers.authorization)) {
       res.status(401).json({ error: 'Unauthorized admin session.' });
       return;
     }
 
-    const body = (req.body || {}) as Partial<MatchEvent>;
-    if (!body.title || !body.location) {
-      res.status(400).json({ error: 'Match title and pitch location are required.' });
-      return;
+    try {
+      const inboxKey = getAdminInboxKey();
+      if (!inboxKey) {
+        res.status(500).json({ error: 'Admin key not configured.' });
+        return;
+      }
+      await ensureAdminKeyRegistered(inboxKey);
+
+      const body = (req.body || {}) as Partial<MatchEvent>;
+      const title = String(body.title || '').trim().slice(0, 120);
+      const location = String(body.location || '').trim().slice(0, 160);
+      if (!title || !location) {
+        res.status(400).json({ error: 'Match title and pitch location are required.' });
+        return;
+      }
+
+      const matchId = sanitizeId(String(body.id || `m-${Date.now()}`), 'm');
+      const eventType = ['5-a-side', '7-a-side', 'Full Field'].includes(String(body.event_type))
+        ? String(body.event_type)
+        : '5-a-side';
+      const date = String(body.date || 'Today').trim().slice(0, 60) || 'Today';
+      const time = String(body.time || '5:30 PM - 7:00 PM').trim().slice(0, 60) || '5:30 PM - 7:00 PM';
+      const price = Math.max(0, Math.min(100000, Number(body.price) || 0));
+      const totalSpots = Math.max(1, Math.min(200, Math.round(Number(body.total_spots) || 10)));
+      const imageUrl =
+        body.image_url && String(body.image_url).trim().length >= 5
+          ? String(body.image_url).trim().slice(0, 700000)
+          : 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=700';
+      const description = String(body.description || 'Friendly pickup game.')
+        .trim()
+        .slice(0, 1000);
+      const amenities = (
+        Array.isArray(body.amenities) && body.amenities.length > 0
+          ? body.amenities
+          : ['Artificial Turf', 'Bibs Provided', 'Water']
+      )
+        .slice(0, 10)
+        .map((a) => String(a).slice(0, 60));
+
+      const opId = makeOpId();
+      const batch = writeBatch(serverDb);
+
+      batch.set(doc(serverDb, 'admin_ops', opId), {
+        id: opId,
+        adminKey: inboxKey,
+        action: 'create_match',
+        createdAt: serverTimestamp(),
+      });
+
+      batch.set(doc(serverDb, 'matches', matchId), {
+        id: matchId,
+        title,
+        event_type: eventType,
+        date,
+        time,
+        location,
+        price,
+        total_spots: totalSpots,
+        verified_spots: 0,
+        pending_spots: 0,
+        image_url: imageUrl,
+        description,
+        amenities,
+        visibility: 'live',
+        lastBookingId: 'init',
+        lastAdminOpId: opId,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      await batch.commit();
+
+      const createdEvent: MatchEvent = {
+        id: matchId,
+        title,
+        event_type: eventType,
+        date,
+        time,
+        location,
+        price,
+        total_spots: totalSpots,
+        booked_spots: 0,
+        verified_spots: 0,
+        pending_spots: 0,
+        visibility: 'live',
+        image_url: imageUrl,
+        description,
+        amenities,
+      };
+
+      res.status(201).json({ ok: true, event: createdEvent });
+    } catch (err) {
+      console.error('Create match error:', err);
+      res.status(500).json({ error: 'Could not publish match.' });
     }
-
-    const newEvent: MatchEvent = {
-      id: body.id || Date.now().toString(),
-      title: String(body.title).trim(),
-      event_type: String(body.event_type || '5-a-side'),
-      date: String(body.date || 'Today').trim(),
-      time: String(body.time || '5:30 PM - 7:00 PM').trim(),
-      location: String(body.location).trim(),
-      price: Math.max(0, Number(body.price) || 0),
-      total_spots: Math.max(1, Number(body.total_spots) || 10),
-      booked_spots: 0,
-      image_url:
-        body.image_url && String(body.image_url).trim().length > 0
-          ? String(body.image_url).trim()
-          : 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=700',
-      description: String(body.description || 'Friendly pickup game.').trim(),
-      amenities: Array.isArray(body.amenities)
-        ? body.amenities
-        : ['Artificial Turf', 'Bibs Provided', 'Water'],
-    };
-
-    if (!store.events.some((e) => e.id === newEvent.id)) {
-      store.events.unshift(newEvent);
-      saveAppStore(store);
-      notifyAllClients();
-    }
-
-    res.status(201).json({ ok: true, version: stateVersion, event: newEvent });
   });
 
-  // Admin: update match booking limit
-  app.patch('/api/events/:id/limit', (req: Request, res: Response) => {
+  // Admin: update match booking limit in Firestore
+  app.patch('/api/events/:id/limit', async (req: Request, res: Response) => {
     if (!verifyToken(req.headers.authorization)) {
       res.status(401).json({ error: 'Unauthorized admin session.' });
       return;
     }
 
-    const eventId = String(req.params.id);
-    const { total_spots } = (req.body || {}) as { total_spots?: number };
-    const nextLimit = Number(total_spots);
-    if (!Number.isFinite(nextLimit) || nextLimit < 1) {
-      res.status(400).json({ error: 'Booking limit must be at least 1.' });
-      return;
-    }
+    try {
+      const inboxKey = getAdminInboxKey();
+      if (!inboxKey) {
+        res.status(500).json({ error: 'Admin key not configured.' });
+        return;
+      }
+      await ensureAdminKeyRegistered(inboxKey);
 
-    const target = store.events.find((e) => String(e.id) === eventId);
-    if (!target) {
-      res.status(404).json({ error: 'Match not found.' });
-      return;
-    }
+      const matchId = sanitizeId(String(req.params.id), 'm');
+      const { total_spots } = (req.body || {}) as { total_spots?: number };
+      const requested = Math.round(Number(total_spots) || 0);
+      if (requested < 1 || requested > 200) {
+        res.status(400).json({ error: 'Booking limit must be between 1 and 200.' });
+        return;
+      }
 
-    target.total_spots = Math.round(nextLimit);
-    saveAppStore(store);
-    notifyAllClients();
-    res.json({ ok: true, version: stateVersion, event: target });
+      const matchRef = doc(serverDb, 'matches', matchId);
+      const matchSnap = await getDoc(matchRef);
+      if (!matchSnap.exists()) {
+        res.status(404).json({ error: 'Match not found.' });
+        return;
+      }
+
+      const m = matchSnap.data() as Record<string, unknown>;
+      const activeSpots =
+        Math.max(0, Math.round(Number(m.verified_spots) || 0)) +
+        Math.max(0, Math.round(Number(m.pending_spots) || 0));
+
+      if (requested < activeSpots) {
+        res.status(400).json({
+          error: `Limit cannot be lower than active spots (${activeSpots}).`,
+        });
+        return;
+      }
+
+      const opId = makeOpId();
+      const batch = writeBatch(serverDb);
+      batch.set(doc(serverDb, 'admin_ops', opId), {
+        id: opId,
+        adminKey: inboxKey,
+        action: 'update_limit',
+        createdAt: serverTimestamp(),
+      });
+      batch.update(matchRef, {
+        total_spots: requested,
+        lastAdminOpId: opId,
+        updatedAt: serverTimestamp(),
+      });
+
+      await batch.commit();
+      res.json({ ok: true, total_spots: requested });
+    } catch (err) {
+      console.error('Update limit error:', err);
+      res.status(500).json({ error: 'Could not update booking limit.' });
+    }
   });
 
-  // Admin: delete match
-  app.delete('/api/events/:id', (req: Request, res: Response) => {
+  // Admin: remove (archive) match in Firestore
+  app.delete('/api/events/:id', async (req: Request, res: Response) => {
     if (!verifyToken(req.headers.authorization)) {
       res.status(401).json({ error: 'Unauthorized admin session.' });
       return;
     }
 
-    const eventId = String(req.params.id);
-    store.events = store.events.filter((e) => String(e.id) !== eventId);
-    saveAppStore(store);
-    notifyAllClients();
-    res.json({ ok: true, version: stateVersion });
+    try {
+      const inboxKey = getAdminInboxKey();
+      if (!inboxKey) {
+        res.status(500).json({ error: 'Admin key not configured.' });
+        return;
+      }
+      await ensureAdminKeyRegistered(inboxKey);
+
+      const matchId = sanitizeId(String(req.params.id), 'm');
+      const matchRef = doc(serverDb, 'matches', matchId);
+      const matchSnap = await getDoc(matchRef);
+      if (!matchSnap.exists()) {
+        res.json({ ok: true });
+        return;
+      }
+
+      const opId = makeOpId();
+      const batch = writeBatch(serverDb);
+      batch.set(doc(serverDb, 'admin_ops', opId), {
+        id: opId,
+        adminKey: inboxKey,
+        action: 'archive_match',
+        createdAt: serverTimestamp(),
+      });
+      batch.update(matchRef, {
+        visibility: 'archived',
+        lastAdminOpId: opId,
+        updatedAt: serverTimestamp(),
+      });
+
+      await batch.commit();
+      res.json({ ok: true });
+    } catch (err) {
+      console.error('Delete match error:', err);
+      res.status(500).json({ error: 'Could not remove match.' });
+    }
   });
 
   // Admin password lock endpoints
-  app.get('/api/admin/status', (req: Request, res: Response) => {
+  app.get('/api/admin/status', async (req: Request, res: Response) => {
     const configured = isPasswordConfigured();
     const envManaged = Boolean(getEnvPassword());
     const unlocked = configured && verifyToken(req.headers.authorization);
-    res.json({ configured, unlocked, envManaged });
+    const inboxKey = unlocked ? getAdminInboxKey() : null;
+    if (inboxKey) {
+      await ensureAdminKeyRegistered(inboxKey).catch(() => {});
+    }
+    res.json({ configured, unlocked, envManaged, inboxKey });
   });
 
-  app.post('/api/admin/setup', (req: Request, res: Response) => {
+  app.post('/api/admin/setup', async (req: Request, res: Response) => {
     if (isPasswordConfigured()) {
       res.status(400).json({ error: 'Admin password is already configured.' });
       return;
@@ -427,11 +726,15 @@ async function startServer() {
     }
 
     writeStoredAuth(password);
+    const inboxKey = getAdminInboxKey();
+    if (inboxKey) {
+      await ensureAdminKeyRegistered(inboxKey).catch(() => {});
+    }
     const token = issueToken();
-    res.json({ ok: true, token });
+    res.json({ ok: true, token, inboxKey });
   });
 
-  app.post('/api/admin/unlock', (req: Request, res: Response) => {
+  app.post('/api/admin/unlock', async (req: Request, res: Response) => {
     if (!isPasswordConfigured()) {
       res.status(400).json({ error: 'Admin password has not been set up yet.' });
       return;
@@ -443,11 +746,15 @@ async function startServer() {
       return;
     }
 
+    const inboxKey = getAdminInboxKey();
+    if (inboxKey) {
+      await ensureAdminKeyRegistered(inboxKey).catch(() => {});
+    }
     const token = issueToken();
-    res.json({ ok: true, token });
+    res.json({ ok: true, token, inboxKey });
   });
 
-  app.post('/api/admin/change-password', (req: Request, res: Response) => {
+  app.post('/api/admin/change-password', async (req: Request, res: Response) => {
     if (getEnvPassword()) {
       res.status(400).json({
         error: 'Password is set via ADMIN_PASSWORD environment variable.',
@@ -475,9 +782,14 @@ async function startServer() {
       return;
     }
 
+    const previousInboxKey = getAdminInboxKey();
     writeStoredAuth(newPassword);
+    const nextInboxKey = getAdminInboxKey();
+    if (nextInboxKey) {
+      await ensureAdminKeyRegistered(nextInboxKey, previousInboxKey).catch(() => {});
+    }
     const token = issueToken();
-    res.json({ ok: true, token });
+    res.json({ ok: true, token, inboxKey: nextInboxKey });
   });
 
   const isProd = process.env.NODE_ENV === 'production';

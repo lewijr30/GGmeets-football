@@ -4,7 +4,10 @@ import { UserProfile } from '../types';
 interface ProfileViewProps {
   userProfile: UserProfile;
   onSaveProfile: (updated: UserProfile) => void;
-  onFileUpload: (e: React.ChangeEvent<HTMLInputElement>, callback: (dataUrl: string) => void) => void;
+  onFileUpload: (
+    e: React.ChangeEvent<HTMLInputElement>,
+    callback: (dataUrl: string) => void
+  ) => void;
 }
 
 export const ProfileView: React.FC<ProfileViewProps> = ({
@@ -14,17 +17,15 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 }) => {
   const [name, setName] = useState(userProfile.name);
   const [phone, setPhone] = useState(userProfile.phone);
-  const [position, setPosition] = useState(userProfile.position);
   const [neighborhood, setNeighborhood] = useState(userProfile.neighborhood);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSaveProfile({
       ...userProfile,
-      name: name.trim() || userProfile.name,
-      phone: phone.trim() || userProfile.phone,
-      position,
-      neighborhood: neighborhood.trim() || userProfile.neighborhood,
+      name: name.trim(),
+      phone: phone.trim(),
+      neighborhood: neighborhood.trim() || 'Addis Ababa',
     });
   };
 
@@ -48,10 +49,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                   onFileUpload(e, (dataUrl) =>
                     onSaveProfile({
                       ...userProfile,
-                      name: name.trim() || userProfile.name,
-                      phone: phone.trim() || userProfile.phone,
-                      position,
-                      neighborhood: neighborhood.trim() || userProfile.neighborhood,
+                      name: name.trim(),
+                      phone: phone.trim(),
+                      neighborhood: neighborhood.trim() || 'Addis Ababa',
                       avatar: dataUrl,
                     })
                   )
@@ -61,15 +61,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             </label>
           </div>
 
-          <h2 className="text-2xl font-extrabold text-white">{userProfile.name}</h2>
-          <p className="text-xs text-slate-400 font-mono mt-0.5">{userProfile.phone}</p>
+          <h2 className="text-2xl font-extrabold text-white">
+            {userProfile.name.trim() || 'Player Profile'}
+          </h2>
+          {userProfile.phone.trim() && (
+            <p className="text-xs text-slate-400 font-mono mt-0.5">{userProfile.phone}</p>
+          )}
 
           <div className="flex gap-2 mt-3">
             <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-[#111A2E] text-slate-300 border border-[#1E2D4A]">
-              ⚽ {userProfile.position}
-            </span>
-            <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-[#111A2E] text-slate-300 border border-[#1E2D4A]">
-              📍 {userProfile.neighborhood}
+              📍 {userProfile.neighborhood || 'Addis Ababa'}
             </span>
           </div>
 
@@ -81,9 +82,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               <input
                 name="p_name"
                 type="text"
+                placeholder="Enter your full name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
+                className="w-full px-3 py-2.5 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
               />
             </div>
             <div>
@@ -92,41 +94,25 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               </label>
               <input
                 name="p_phone"
-                type="text"
+                type="tel"
+                placeholder="e.g. 0911 23 45 67"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
+                className="w-full px-3 py-2.5 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
-                  Position
-                </label>
-                <select
-                  name="p_pos"
-                  value={position}
-                  onChange={(e) => setPosition(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
-                >
-                  <option value="Striker">Striker</option>
-                  <option value="Midfielder">Midfielder</option>
-                  <option value="Defender">Defender</option>
-                  <option value="Goalkeeper">Goalkeeper</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
-                  Subcity
-                </label>
-                <input
-                  name="p_area"
-                  type="text"
-                  value={neighborhood}
-                  onChange={(e) => setNeighborhood(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
-                />
-              </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
+                Subcity / Area
+              </label>
+              <input
+                name="p_area"
+                type="text"
+                placeholder="e.g. Bole, Addis Ababa"
+                value={neighborhood}
+                onChange={(e) => setNeighborhood(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
+              />
             </div>
             <button
               type="submit"

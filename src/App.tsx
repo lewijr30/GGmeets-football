@@ -1,19 +1,4 @@
-import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
-import {
-  Timestamp,
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocs,
-  onSnapshot,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where,
-  writeBatch,
-} from 'firebase/firestore';
+import { Timestamp, collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AdminLoginView } from './components/AdminLoginView';
 import { AdminView } from './components/AdminView';
@@ -31,23 +16,14 @@ import { Navbar } from './components/Navbar';
 import { ProfileView } from './components/ProfileView';
 import { DEFAULT_GAMES, DEFAULT_PROFILE } from './constants/data';
 import {
-  BOOTSTRAPPED_ADMIN_EMAIL,
-  MAX_DATE_LENGTH,
-  MAX_DESCRIPTION_LENGTH,
   MAX_IMAGE_LENGTH,
-  MAX_LOCATION_LENGTH,
   MAX_PHONE_LENGTH,
   MAX_PLAYER_NAME_LENGTH,
-  MAX_TIME_LENGTH,
-  MAX_TITLE_LENGTH,
   OperationType,
-  auth,
   db,
   docToBooking,
   docToMatchEvent,
-  googleProvider,
   handleFirestoreError,
-  sanitizeId,
 } from './lib/firebase';
 import {
   AdminTab,
@@ -64,6 +40,8 @@ import { getMatchCapacity } from './utils/capacity';
 import { compressImageFile } from './utils/image';
 
 const ADMIN_TOKEN_STORAGE_KEY = 'gg_admin_lock_token';
+const LOCAL_PASSES_STORAGE_KEY = 'gg_telegram_passes_v1';
+const PROFILE_STORAGE_KEY = 'gg_telegram_profile_v1';
 
 function loadFromStorage<T>(key: string, fallback: T): T {
   try {
@@ -107,51 +85,6 @@ function getPublicClientUrl(): string {
   return origin;
 }
 
-function buildValidMatchFields(ev: MatchEvent) {
-  const matchId = sanitizeId(ev.id || `${Date.now()}`, 'match');
-  const validFormat = ['5-a-side', '7-a-side', 'Full Field'].includes(ev.event_type)
-    ? ev.event_type
-    : '5-a-side';
-  const totalSpots = Math.max(1, Math.min(200, Math.round(Number(ev.total_spots) || 10)));
-  const verifiedSpots = Math.min(
-    totalSpots,
-    Math.max(0, Math.round(Number(ev.verified_spots ?? ev.booked_spots) || 0))
-  );
-  const pendingSpots = Math.min(
-    Math.max(0, totalSpots - verifiedSpots),
-    Math.max(0, Math.round(Number(ev.pending_spots) || 0))
-  );
-  const cleanImage =
-    ev.image_url && ev.image_url.trim().length >= 5
-      ? ev.image_url.trim().slice(0, MAX_IMAGE_LENGTH)
-      : 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=700';
-  const cleanAmenities = (
-    Array.isArray(ev.amenities) && ev.amenities.length > 0
-      ? ev.amenities
-      : ['Artificial Turf', 'Bibs Provided', 'Water']
-  )
-    .slice(0, 10)
-    .map((item) => String(item).slice(0, 60));
-
-  return {
-    id: matchId,
-    title: (ev.title || 'Pickup Match').trim().slice(0, MAX_TITLE_LENGTH) || 'Pickup Match',
-    event_type: validFormat,
-    date: (ev.date || 'Today').trim().slice(0, MAX_DATE_LENGTH) || 'Today',
-    time: (ev.time || '5:30 PM - 7:00 PM').trim().slice(0, MAX_TIME_LENGTH) || '5:30 PM - 7:00 PM',
-    location: (ev.location || 'Addis Ababa').trim().slice(0, MAX_LOCATION_LENGTH) || 'Addis Ababa',
-    price: Math.max(0, Math.min(100000, Number(ev.price) || 0)),
-    total_spots: totalSpots,
-    verified_spots: verifiedSpots,
-    pending_spots: pendingSpots,
-    image_url: cleanImage,
-    description: (ev.description || 'Friendly pickup game.').trim().slice(0, MAX_DESCRIPTION_LENGTH),
-    amenities: cleanAmenities,
-    visibility: 'public' as const,
-    lastBookingId: sanitizeId(ev.lastBookingId || 'init', 'init'),
-  };
-}
-
 function playNotificationChime() {
   try {
     const AudioCtx =
@@ -187,29 +120,29 @@ export function App() {
   const [adminTab, setAdminTab] = useState<AdminTab>('approvals');
   const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>('all');
 
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
-  const [authReady, setAuthReady] = useState<boolean>(false);
-  const [isSigningInGoogle, setIsSigningInGoogle] = useState<boolean>(false);
-
   const [isPasswordConfigured, setIsPasswordConfigured] = useState<boolean>(true);
   const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(false);
+  const [adminInboxKey, setAdminInboxKey] = useState<string | null>(null);
   const [isEnvManagedPassword, setIsEnvManagedPassword] = useState<boolean>(false);
   const [isCheckingLock, setIsCheckingLock] = useState<boolean>(true);
   const [changePasswordOpen, setChangePasswordOpen] = useState<boolean>(false);
 
   const [events, setEvents] = useState<MatchEvent[]>(DEFAULT_GAMES);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [myLocalPasses, setMyLocalPasses] = useState<Booking[]>(() =>
+    loadFromStorage<Booking[]>(LOCAL_PASSES_STORAGE_KEY, [])
+  );
   const [userProfile, setUserProfile] = useState<UserProfile>(() =>
-    loadFromStorage('gg_profile', DEFAULT_PROFILE)
+    loadFromStorage(PROFILE_STORAGE_KEY, DEFAULT_PROFILE)
   );
 
   const [bookingPlayerName, setBookingPlayerName] = useState<string>(() => {
-    const saved = loadFromStorage('gg_profile', DEFAULT_PROFILE);
-    return saved.name === DEFAULT_PROFILE.name ? '' : saved.name;
+    const saved = loadFromStorage(PROFILE_STORAGE_KEY, DEFAULT_PROFILE);
+    return saved.name;
   });
   const [bookingPlayerPhone, setBookingPlayerPhone] = useState<string>(() => {
-    const saved = loadFromStorage('gg_profile', DEFAULT_PROFILE);
-    return saved.phone === DEFAULT_PROFILE.phone ? '' : saved.phone;
+    const saved = loadFromStorage(PROFILE_STORAGE_KEY, DEFAULT_PROFILE);
+    return saved.phone;
   });
 
   const [liveAdminAlerts, setLiveAdminAlerts] = useState<Booking[]>([]);
@@ -232,17 +165,8 @@ export function App() {
 
   const toastTimerRef = useRef<number | null>(null);
   const knownBookingIdsRef = useRef<Set<string> | null>(null);
-  const hasSeededMatchesRef = useRef<boolean>(false);
   const isAdminUnlockedRef = useRef<boolean>(false);
   isAdminUnlockedRef.current = isAdminUnlocked;
-
-  const isFirebaseAdminUser = useMemo(() => {
-    return Boolean(
-      firebaseUser &&
-        firebaseUser.emailVerified &&
-        firebaseUser.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()
-    );
-  }, [firebaseUser]);
 
   const selectedEvent = useMemo(
     () => (selectedEventId ? events.find((e) => e.id === selectedEventId) || null : null),
@@ -282,105 +206,70 @@ export function App() {
     }, 3600);
   }, []);
 
-  // Track Firebase Auth readiness & current Google user
+  // Persist player's local passes in localStorage
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setFirebaseUser(user);
-      setAuthReady(true);
-      if (user?.displayName) {
-        setBookingPlayerName((prev) => prev || user.displayName || '');
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const handleGoogleSignIn = useCallback(async () => {
-    setIsSigningInGoogle(true);
     try {
-      const cred = await signInWithPopup(auth, googleProvider);
-      if (cred.user.displayName) {
-        setBookingPlayerName((prev) => prev || cred.user.displayName || '');
-      }
-      showToast(`✅ Connected as ${cred.user.email || cred.user.displayName || 'Player'}!`);
+      localStorage.setItem(LOCAL_PASSES_STORAGE_KEY, JSON.stringify(myLocalPasses));
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Google Sign-In was cancelled.';
-      if (!message.includes('popup-closed-by-user')) {
-        showToast(`⚠️ ${message}`);
-      }
-    } finally {
-      setIsSigningInGoogle(false);
+      console.warn('Failed to persist local passes:', err);
     }
-  }, [showToast]);
+  }, [myLocalPasses]);
 
-  const handleGoogleSignOut = useCallback(async () => {
-    try {
-      await signOut(auth);
-      showToast('Signed out of Google.');
-    } catch {
-      // Ignore sign-out errors
-    }
-  }, [showToast]);
+  const myPassIdsKey = useMemo(
+    () =>
+      myLocalPasses
+        .map((p) => p.passId || '')
+        .filter((pid) => pid.startsWith('pass-') && pid.length >= 20)
+        .join(','),
+    [myLocalPasses]
+  );
 
-  // Seed initial matches into Firestore once when Host Admin connects if Firestore is empty
-  const seedInitialMatchesIfEmpty = useCallback(async () => {
-    if (!isFirebaseAdminUser || hasSeededMatchesRef.current) return;
-    hasSeededMatchesRef.current = true;
-
-    try {
-      const existingSnap = await getDocs(
-        query(collection(db, 'matches'), where('visibility', '==', 'public'))
-      );
-      if (!existingSnap.empty) return;
-
-      let seedSource: MatchEvent[] = DEFAULT_GAMES;
-      try {
-        const res = await fetch('/api/state', { cache: 'no-store' });
-        if (res.ok) {
-          const localData = (await res.json()) as { events?: MatchEvent[] };
-          if (Array.isArray(localData.events) && localData.events.length > 0) {
-            seedSource = localData.events;
-          }
-        }
-      } catch {
-        // Fallback to DEFAULT_GAMES
-      }
-
-      const batch = writeBatch(db);
-      for (const rawEv of seedSource) {
-        const clean = buildValidMatchFields({
-          ...rawEv,
-          verified_spots: rawEv.verified_spots ?? rawEv.booked_spots ?? 0,
-          pending_spots: rawEv.pending_spots ?? 0,
-        });
-        batch.set(doc(db, 'matches', clean.id), {
-          ...clean,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-      await batch.commit();
-      showToast('⚡ Synced existing matches live to Firebase Firestore!');
-    } catch (error) {
-      hasSeededMatchesRef.current = false;
-      handleFirestoreError(error, OperationType.WRITE, 'matches');
-    }
-  }, [isFirebaseAdminUser, showToast]);
-
-  // Real-time Firestore listener for public matches (works across all client links & devices)
+  // Live Firestore status listeners for the player's local passes (works inside Telegram WebView)
   useEffect(() => {
-    if (!authReady) return;
+    if (!myPassIdsKey) return;
 
-    const matchesQuery = query(collection(db, 'matches'), where('visibility', '==', 'public'));
+    const passIds = myPassIdsKey.split(',').filter(Boolean);
+    const unsubs = passIds.map((passId) =>
+      onSnapshot(
+        doc(db, 'booking_passes', passId),
+        (docSnap) => {
+          if (!docSnap.exists()) return;
+          const data = docSnap.data() as Record<string, unknown>;
+          const rawStatus = String(data.status || 'pending');
+          if (!['pending', 'approved', 'rejected'].includes(rawStatus)) return;
+          const nextStatus = rawStatus as BookingStatus;
+
+          setMyLocalPasses((prev) => {
+            let changed = false;
+            const updated = prev.map((item) => {
+              if (item.passId === passId && item.status !== nextStatus) {
+                changed = true;
+                return { ...item, status: nextStatus };
+              }
+              return item;
+            });
+            return changed ? updated : prev;
+          });
+        },
+        (error) => {
+          handleFirestoreError(error, OperationType.GET, `booking_passes/${passId}`);
+        }
+      )
+    );
+
+    return () => {
+      for (const unsub of unsubs) {
+        unsub();
+      }
+    };
+  }, [myPassIdsKey]);
+
+  // Real-time Firestore listener for live matches (works across Telegram Bot & all browsers)
+  useEffect(() => {
+    const matchesQuery = query(collection(db, 'matches'), where('visibility', '==', 'live'));
     const unsubscribe = onSnapshot(
       matchesQuery,
       (snapshot) => {
-        if (snapshot.empty) {
-          if (isFirebaseAdminUser) {
-            void seedInitialMatchesIfEmpty();
-          }
-          return;
-        }
-
         const loaded: Array<{ match: MatchEvent; sortMs: number }> = [];
         snapshot.forEach((docSnap) => {
           const raw = docSnap.data() as Record<string, unknown>;
@@ -401,7 +290,7 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, [authReady, isFirebaseAdminUser, seedInitialMatchesIfEmpty]);
+  }, []);
 
   // Real-time incoming bookings processor & live Admin notification trigger
   const applyIncomingBookings = useCallback((incomingBookings: Booking[]) => {
@@ -451,9 +340,9 @@ export function App() {
     }
   }, []);
 
-  // Real-time Firestore listener for bookings (all bookings for Admin; owner-isolated for Players)
+  // Real-time Firestore listener for password-unlocked Host Admin inbox (zero Google Sign-In!)
   useEffect(() => {
-    if (!authReady || !firebaseUser || !firebaseUser.emailVerified) {
+    if (!isAdminUnlocked || !adminInboxKey) {
       knownBookingIdsRef.current = null;
       setBookings([]);
       return;
@@ -461,12 +350,13 @@ export function App() {
 
     knownBookingIdsRef.current = null;
 
-    const bookingsRef = isFirebaseAdminUser
-      ? collection(db, 'bookings')
-      : query(collection(db, 'bookings'), where('ownerId', '==', firebaseUser.uid));
+    const inboxQuery = query(
+      collection(db, 'admin_inboxes', adminInboxKey, 'bookings'),
+      where('inboxKey', '==', adminInboxKey)
+    );
 
     const unsubscribe = onSnapshot(
-      bookingsRef,
+      inboxQuery,
       (snapshot) => {
         const rows: Array<{ booking: Booking; sortMs: number }> = [];
         snapshot.forEach((docSnap) => {
@@ -482,12 +372,16 @@ export function App() {
         applyIncomingBookings(rows.map((r) => r.booking));
       },
       (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'bookings');
+        handleFirestoreError(
+          error,
+          OperationType.LIST,
+          `admin_inboxes/${adminInboxKey}/bookings`
+        );
       }
     );
 
     return () => unsubscribe();
-  }, [authReady, firebaseUser, isFirebaseAdminUser, applyIncomingBookings]);
+  }, [isAdminUnlocked, adminInboxKey, applyIncomingBookings]);
 
   const isAdminRoute = pathname === '/admin' || pathname === '/admin/login';
 
@@ -519,19 +413,28 @@ export function App() {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((res) => res.json())
-      .then((data: { configured?: boolean; unlocked?: boolean; envManaged?: boolean }) => {
-        if (!active) return;
-        setIsPasswordConfigured(Boolean(data.configured));
-        setIsAdminUnlocked(Boolean(data.unlocked));
-        setIsEnvManagedPassword(Boolean(data.envManaged));
-        if (!data.unlocked) {
-          setStoredAdminToken(null);
+      .then(
+        (data: {
+          configured?: boolean;
+          unlocked?: boolean;
+          envManaged?: boolean;
+          inboxKey?: string | null;
+        }) => {
+          if (!active) return;
+          setIsPasswordConfigured(Boolean(data.configured));
+          setIsAdminUnlocked(Boolean(data.unlocked));
+          setAdminInboxKey(data.unlocked && data.inboxKey ? data.inboxKey : null);
+          setIsEnvManagedPassword(Boolean(data.envManaged));
+          if (!data.unlocked) {
+            setStoredAdminToken(null);
+          }
+          setIsCheckingLock(false);
         }
-        setIsCheckingLock(false);
-      })
+      )
       .catch(() => {
         if (!active) return;
         setIsAdminUnlocked(false);
+        setAdminInboxKey(null);
         setIsCheckingLock(false);
       });
 
@@ -549,7 +452,7 @@ export function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem('gg_profile', JSON.stringify(userProfile));
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(userProfile));
     } catch (err) {
       console.warn('Failed to persist profile:', err);
     }
@@ -580,12 +483,18 @@ export function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }),
       });
-      const data = (await res.json()) as { ok?: boolean; token?: string; error?: string };
+      const data = (await res.json()) as {
+        ok?: boolean;
+        token?: string;
+        inboxKey?: string | null;
+        error?: string;
+      };
       if (!res.ok || !data.token) {
         return data.error || 'Could not configure admin password.';
       }
       setStoredAdminToken(data.token);
       setIsPasswordConfigured(true);
+      setAdminInboxKey(data.inboxKey || null);
       setIsAdminUnlocked(true);
       showToast('🔒 Admin password set & page unlocked!');
       return null;
@@ -601,11 +510,17 @@ export function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }),
       });
-      const data = (await res.json()) as { ok?: boolean; token?: string; error?: string };
+      const data = (await res.json()) as {
+        ok?: boolean;
+        token?: string;
+        inboxKey?: string | null;
+        error?: string;
+      };
       if (!res.ok || !data.token) {
         return data.error || 'Incorrect password.';
       }
       setStoredAdminToken(data.token);
+      setAdminInboxKey(data.inboxKey || null);
       setIsAdminUnlocked(true);
       showToast('🔓 Host Admin unlocked!');
       return null;
@@ -628,11 +543,19 @@ export function App() {
         },
         body: JSON.stringify({ currentPassword, newPassword }),
       });
-      const data = (await res.json()) as { ok?: boolean; token?: string; error?: string };
+      const data = (await res.json()) as {
+        ok?: boolean;
+        token?: string;
+        inboxKey?: string | null;
+        error?: string;
+      };
       if (!res.ok || !data.token) {
         return data.error || 'Failed to update password.';
       }
       setStoredAdminToken(data.token);
+      if (data.inboxKey) {
+        setAdminInboxKey(data.inboxKey);
+      }
       setChangePasswordOpen(false);
       showToast('🔑 Admin password updated!');
       return null;
@@ -644,6 +567,7 @@ export function App() {
   const handleLockAdmin = () => {
     setStoredAdminToken(null);
     setIsAdminUnlocked(false);
+    setAdminInboxKey(null);
     setChangePasswordOpen(false);
     setLiveAdminAlerts([]);
     navigate('/admin/login', true);
@@ -686,95 +610,60 @@ export function App() {
       });
   };
 
-  // Client submits Telebirr / CBE transfer screenshot -> atomic Firestore writeBatch
+  // Player submits Telebirr / CBE transfer screenshot (works inside Telegram Bot WebApp without login!)
   const handleClientBookingSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedEvent) return;
-    if (!firebaseUser) {
-      await handleGoogleSignIn();
-      return;
-    }
     if (!receiptFilePreview) {
       showToast('⚠️ Please upload your transfer screenshot.');
       return;
     }
 
-    const cleanName = (bookingPlayerName.trim() || firebaseUser.displayName || 'Player').slice(
-      0,
-      MAX_PLAYER_NAME_LENGTH
-    );
+    const cleanName = bookingPlayerName.trim().slice(0, MAX_PLAYER_NAME_LENGTH);
     const cleanPhone = bookingPlayerPhone.trim().slice(0, MAX_PHONE_LENGTH);
+    if (!cleanName) {
+      showToast('⚠️ Please enter your full name.');
+      return;
+    }
     if (cleanPhone.length < 3) {
       showToast('⚠️ Please enter a valid phone number.');
       return;
     }
 
+    const currentCap = getMatchCapacity(selectedEvent, bookings);
+    if (currentCap.isFull) {
+      showToast('🔒 Booking limit reached! All spots for this match are filled.');
+      return;
+    }
+
     setIsSubmittingBooking(true);
-    const matchId = sanitizeId(selectedEvent.id, 'match');
-    const bookingId = sanitizeId(
-      `b-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      'b'
-    );
 
     try {
-      const matchRef = doc(db, 'matches', matchId);
-      const matchSnap = await getDoc(matchRef);
+      const res = await fetch('/api/bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event_id: selectedEvent.id,
+          player_name: cleanName,
+          player_phone: cleanPhone,
+          payment_method: paymentMethod,
+          screenshot_url: receiptFilePreview,
+        }),
+      });
 
-      if (!matchSnap.exists()) {
+      const data = (await res.json()) as {
+        ok?: boolean;
+        booking?: Booking;
+        error?: string;
+      };
+
+      if (!res.ok || !data.booking) {
         setIsSubmittingBooking(false);
-        showToast('⚠️ This match is not yet published in live storage. Ask host to publish first.');
+        showToast(`⚠️ ${data.error || 'Could not submit booking.'}`);
         return;
       }
 
-      const freshMatch = matchSnap.data() as Record<string, unknown>;
-      const totalSpots = Math.max(1, Math.round(Number(freshMatch.total_spots) || 10));
-      const verifiedSpots = Math.max(0, Math.round(Number(freshMatch.verified_spots) || 0));
-      const pendingSpots = Math.max(0, Math.round(Number(freshMatch.pending_spots) || 0));
-
-      if (verifiedSpots + pendingSpots >= totalSpots) {
-        setIsSubmittingBooking(false);
-        showToast('🔒 Booking limit reached! All spots for this match are filled.');
-        return;
-      }
-
-      const bookingRef = doc(db, 'bookings', bookingId);
-      const batch = writeBatch(db);
-
-      batch.set(bookingRef, {
-        id: bookingId,
-        ownerId: firebaseUser.uid,
-        event_id: matchId,
-        match_title: (String(freshMatch.title || selectedEvent.title) || 'Pickup Match')
-          .trim()
-          .slice(0, MAX_TITLE_LENGTH),
-        match_date: (String(freshMatch.date || selectedEvent.date) || 'Scheduled')
-          .trim()
-          .slice(0, MAX_DATE_LENGTH),
-        match_time: (String(freshMatch.time || selectedEvent.time) || 'TBA')
-          .trim()
-          .slice(0, MAX_TIME_LENGTH),
-        match_location: (String(freshMatch.location || selectedEvent.location) || 'Addis Ababa')
-          .trim()
-          .slice(0, MAX_LOCATION_LENGTH),
-        player_name: cleanName,
-        player_phone: cleanPhone,
-        amount: Math.max(0, Math.min(100000, Number(freshMatch.price ?? selectedEvent.price) || 0)),
-        payment_method: paymentMethod === 'CBE' ? 'CBE' : 'Telebirr',
-        status: 'pending',
-        screenshot_url: receiptFilePreview.slice(0, MAX_IMAGE_LENGTH),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      batch.update(matchRef, {
-        pending_spots: pendingSpots + 1,
-        lastBookingId: bookingId,
-        updatedAt: serverTimestamp(),
-      });
-
-      await batch.commit();
-
-      // Save player's name & phone locally for convenience next time
+      setMyLocalPasses((prev) => [data.booking!, ...prev]);
       setUserProfile((prev) => ({
         ...prev,
         name: cleanName,
@@ -784,156 +673,112 @@ export function App() {
       setIsSubmittingBooking(false);
       setBookingModalOpen(false);
       setReceiptFilePreview(null);
-      showToast('⚽ Receipt submitted! Host has been notified in real time.');
+      showToast('⚽ Receipt submitted! Host has been notified to verify your spot.');
       setCurrentView('my-tickets');
-    } catch (error) {
+    } catch {
       setIsSubmittingBooking(false);
-      showToast('⚠️ Could not submit booking. Please check your connection and try again.');
-      handleFirestoreError(error, OperationType.WRITE, `bookings/${bookingId}`);
+      showToast('⚠️ Network error while submitting receipt. Please try again.');
     }
   };
 
-  // Host Admin approves or rejects payment -> atomic Firestore writeBatch updating booking + spot tracker
+  // Host Admin approves or rejects payment -> updates Firestore via server
   const handleUpdatePaymentStatus = async (
     bookingId: string,
-    eventId: string,
+    _eventId: string,
     newStatus: BookingStatus
   ) => {
-    if (!isFirebaseAdminUser) {
-      showToast(`⚠️ Sign in as ${BOOTSTRAPPED_ADMIN_EMAIL} to verify payments.`);
-      return;
-    }
-
-    const safeBookingId = sanitizeId(bookingId, 'b');
-    const safeMatchId = sanitizeId(eventId, 'match');
-    const targetBooking = bookings.find((b) => b.id === bookingId);
-    const prevStatus: BookingStatus = targetBooking?.status || 'pending';
-
+    const token = getStoredAdminToken();
     try {
-      const bookingRef = doc(db, 'bookings', safeBookingId);
-      const matchRef = doc(db, 'matches', safeMatchId);
-      const matchSnap = await getDoc(matchRef);
-
-      const batch = writeBatch(db);
-      batch.update(bookingRef, {
-        status: newStatus,
-        updatedAt: serverTimestamp(),
+      const res = await fetch(`/api/bookings/${encodeURIComponent(bookingId)}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ status: newStatus }),
       });
 
-      if (matchSnap.exists()) {
-        const m = matchSnap.data() as Record<string, unknown>;
-        const totalSpots = Math.max(1, Math.round(Number(m.total_spots) || 10));
-        let nextVerified = Math.max(0, Math.round(Number(m.verified_spots) || 0));
-        let nextPending = Math.max(0, Math.round(Number(m.pending_spots) || 0));
-
-        if (prevStatus === 'pending' && newStatus === 'approved') {
-          nextPending = Math.max(0, nextPending - 1);
-          nextVerified = Math.min(totalSpots, nextVerified + 1);
-        } else if (prevStatus === 'pending' && newStatus === 'rejected') {
-          nextPending = Math.max(0, nextPending - 1);
-        } else if (prevStatus === 'approved' && newStatus === 'rejected') {
-          nextVerified = Math.max(0, nextVerified - 1);
-        }
-
-        if (nextVerified + nextPending > totalSpots) {
-          nextPending = Math.max(0, totalSpots - nextVerified);
-        }
-
-        batch.update(matchRef, {
-          verified_spots: nextVerified,
-          pending_spots: nextPending,
-          updatedAt: serverTimestamp(),
-        });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        showToast(`⚠️ ${data.error || 'Could not update payment status.'}`);
+        return;
       }
 
-      await batch.commit();
       setLiveAdminAlerts((prev) => prev.filter((a) => a.id !== bookingId));
 
       if (newStatus === 'approved') {
-        showToast('✅ Payment Approved & spot verified live!');
+        showToast('✅ Payment Approved & player pass verified live!');
       } else if (newStatus === 'rejected') {
         showToast('❌ Payment rejected & spot reopened live.');
       }
-    } catch (error) {
-      showToast('⚠️ Failed to update payment status.');
-      handleFirestoreError(error, OperationType.UPDATE, `bookings/${safeBookingId}`);
+    } catch {
+      showToast('⚠️ Network error while updating payment status.');
     }
   };
 
-  // Host Admin deletes a match from Firestore
+  // Host Admin removes match listing
   const handleConfirmDeleteMatch = async () => {
     if (!matchToDelete) return;
-    if (!isFirebaseAdminUser) {
-      showToast(`⚠️ Sign in as ${BOOTSTRAPPED_ADMIN_EMAIL} to manage matches.`);
-      return;
-    }
+    const token = getStoredAdminToken();
 
-    const safeMatchId = sanitizeId(matchToDelete.id, 'match');
     try {
-      await deleteDoc(doc(db, 'matches', safeMatchId));
+      const res = await fetch(`/api/events/${encodeURIComponent(matchToDelete.id)}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        showToast('⚠️ Failed to delete match.');
+        return;
+      }
       setMatchToDelete(null);
       showToast('🗑️ Match listing removed from all client pages.');
-    } catch (error) {
-      showToast('⚠️ Failed to delete match.');
-      handleFirestoreError(error, OperationType.DELETE, `matches/${safeMatchId}`);
+    } catch {
+      showToast('⚠️ Network error while removing match.');
     }
   };
 
-  // Host Admin publishes a new match with pitch photo & spot limit to Firestore
+  // Host Admin publishes a new match with pitch photo & spot limit
   const handleCreateMatch = async (createdMatch: MatchEvent) => {
-    if (!isFirebaseAdminUser) {
-      showToast(`⚠️ Sign in as ${BOOTSTRAPPED_ADMIN_EMAIL} to publish matches.`);
-      return;
-    }
-
-    const clean = buildValidMatchFields({
-      ...createdMatch,
-      verified_spots: 0,
-      pending_spots: 0,
-    });
-
+    const token = getStoredAdminToken();
     try {
-      await setDoc(doc(db, 'matches', clean.id), {
-        ...clean,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      const res = await fetch('/api/events', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(createdMatch),
       });
+      const data = (await res.json()) as { ok?: boolean; event?: MatchEvent; error?: string };
+      if (!res.ok || !data.event) {
+        showToast(`⚠️ ${data.error || 'Could not publish match.'}`);
+        return;
+      }
       showToast('⚽ Match published live to all client pages!');
       setAdminTab('games');
-    } catch (error) {
-      showToast('⚠️ Failed to publish match.');
-      handleFirestoreError(error, OperationType.CREATE, `matches/${clean.id}`);
+    } catch {
+      showToast('⚠️ Network error while publishing match.');
     }
   };
 
-  // Host Admin adjusts match booking limit in Firestore
+  // Host Admin adjusts match booking limit
   const handleUpdateMatchLimit = async (eventId: string, newLimit: number) => {
-    if (!isFirebaseAdminUser) {
-      showToast(`⚠️ Sign in as ${BOOTSTRAPPED_ADMIN_EMAIL} to update limits.`);
-      return;
-    }
-
-    const target = events.find((e) => e.id === eventId);
-    if (!target) return;
-
-    const capacity = getMatchCapacity(target, bookings);
-    const minAllowed = Math.max(1, capacity.verifiedSpots + capacity.pendingSpots);
-    if (newLimit < minAllowed) {
-      showToast(`⚠️ Limit cannot be lower than active spots (${minAllowed}).`);
-      return;
-    }
-
-    const nextLimit = Math.min(200, Math.round(newLimit));
-    const safeMatchId = sanitizeId(eventId, 'match');
-
+    const token = getStoredAdminToken();
     try {
-      await updateDoc(doc(db, 'matches', safeMatchId), {
-        total_spots: nextLimit,
-        updatedAt: serverTimestamp(),
+      const res = await fetch(`/api/events/${encodeURIComponent(eventId)}/limit`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ total_spots: newLimit }),
       });
-    } catch (error) {
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        showToast(`⚠️ ${data.error || 'Failed to update booking limit.'}`);
+      }
+    } catch {
       showToast('⚠️ Failed to update booking limit.');
-      handleFirestoreError(error, OperationType.UPDATE, `matches/${safeMatchId}`);
     }
   };
 
@@ -958,11 +803,6 @@ export function App() {
     if (approvalFilter === 'all') return bookings;
     return bookings.filter((b) => b.status === approvalFilter);
   }, [bookings, approvalFilter]);
-
-  const myBookings = useMemo(() => {
-    if (!firebaseUser) return [];
-    return bookings.filter((b) => b.ownerId === firebaseUser.uid);
-  }, [bookings, firebaseUser]);
 
   // Dedicated password-locked /admin/login & /admin route handling
   if (isAdminRoute) {
@@ -1073,7 +913,7 @@ export function App() {
                   GG<span className="text-[#00E676]">meets</span> Admin
                 </span>
                 <span className="text-[10px] text-[#00E676] font-bold tracking-wider uppercase">
-                  {isFirebaseAdminUser ? '● Firebase Live Sync Active' : '○ Connect Host Google'}
+                  ● Live Cloud Sync Active
                 </span>
               </div>
             </div>
@@ -1081,7 +921,7 @@ export function App() {
             <div className="flex items-center gap-2 flex-wrap justify-end">
               <button
                 type="button"
-                onClick={() => handleCopyText(getPublicClientUrl(), 'Public Client Link')}
+                onClick={() => handleCopyText(getPublicClientUrl(), 'Telegram / Client App Link')}
                 className="px-3 py-2 rounded-xl bg-[#00E676]/15 hover:bg-[#00E676]/25 text-[#00E676] border border-[#00E676]/30 text-xs font-extrabold transition cursor-pointer"
               >
                 🔗 Copy Client Link
@@ -1126,70 +966,22 @@ export function App() {
           </div>
         </header>
 
-        {!isFirebaseAdminUser ? (
-          <main className="flex-1 max-w-xl mx-auto px-4 sm:px-6 py-14 w-full flex items-center justify-center">
-            <div className="bg-[#0E1526] border border-[#1A263D] rounded-3xl p-8 w-full text-center space-y-5 shadow-2xl">
-              <div className="w-14 h-14 mx-auto rounded-2xl bg-[#00E676]/15 border border-[#00E676]/30 flex items-center justify-center text-2xl">
-                ⚡
-              </div>
-              <div className="space-y-2">
-                <h2 className="text-2xl font-extrabold text-white">
-                  Connect Host Cloud Sync
-                </h2>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Sign in with your verified host Google account (
-                  <strong className="text-slate-200">{BOOTSTRAPPED_ADMIN_EMAIL}</strong>) so
-                  matches you post and client payment receipts sync live across every phone and
-                  browser.
-                </p>
-              </div>
-
-              {firebaseUser && !isFirebaseAdminUser && (
-                <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/30 text-xs text-red-300 space-y-2">
-                  <p>
-                    Signed in as <strong>{firebaseUser.email}</strong>, which is not the host admin
-                    account.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={handleGoogleSignOut}
-                    className="px-3 py-1.5 rounded-lg bg-[#111A2E] text-white font-bold text-[11px] border border-[#1E2D4A] cursor-pointer"
-                  >
-                    Switch Google Account
-                  </button>
-                </div>
-              )}
-
-              <button
-                type="button"
-                disabled={isSigningInGoogle}
-                onClick={handleGoogleSignIn}
-                className="w-full py-4 rounded-2xl bg-[#00E676] hover:bg-[#00c965] text-black font-extrabold text-xs uppercase tracking-wider shadow-xl shadow-[#00E676]/20 transition cursor-pointer disabled:opacity-60"
-              >
-                {isSigningInGoogle
-                  ? 'Connecting Google...'
-                  : `Connect with Google (${BOOTSTRAPPED_ADMIN_EMAIL}) →`}
-              </button>
-            </div>
-          </main>
-        ) : (
-          <AdminView
-            adminTab={adminTab}
-            setAdminTab={setAdminTab}
-            approvalFilter={approvalFilter}
-            setApprovalFilter={setApprovalFilter}
-            filteredAdminBookings={filteredAdminBookings}
-            allBookings={bookings}
-            pendingCount={pendingCount}
-            events={events}
-            onUpdatePaymentStatus={handleUpdatePaymentStatus}
-            onCreateMatch={handleCreateMatch}
-            onUpdateMatchLimit={handleUpdateMatchLimit}
-            onRequestDeleteMatch={(match) => setMatchToDelete(match)}
-            onViewReceipt={(url) => setViewReceiptModal(url)}
-            onFileUpload={handleFileUpload}
-          />
-        )}
+        <AdminView
+          adminTab={adminTab}
+          setAdminTab={setAdminTab}
+          approvalFilter={approvalFilter}
+          setApprovalFilter={setApprovalFilter}
+          filteredAdminBookings={filteredAdminBookings}
+          allBookings={bookings}
+          pendingCount={pendingCount}
+          events={events}
+          onUpdatePaymentStatus={handleUpdatePaymentStatus}
+          onCreateMatch={handleCreateMatch}
+          onUpdateMatchLimit={handleUpdateMatchLimit}
+          onRequestDeleteMatch={(match) => setMatchToDelete(match)}
+          onViewReceipt={(url) => setViewReceiptModal(url)}
+          onFileUpload={handleFileUpload}
+        />
 
         {viewReceiptModal && (
           <ReceiptZoomModal
@@ -1227,7 +1019,7 @@ export function App() {
       <Navbar
         currentView={currentView}
         setCurrentView={setCurrentView}
-        myBookingsCount={myBookings.length}
+        myBookingsCount={myLocalPasses.length}
         userProfile={userProfile}
       />
 
@@ -1264,10 +1056,8 @@ export function App() {
 
       {currentView === 'my-tickets' && (
         <MyPassesView
-          bookings={myBookings}
+          bookings={myLocalPasses}
           events={events}
-          firebaseUser={firebaseUser}
-          onGoogleSignIn={handleGoogleSignIn}
           setCurrentView={setCurrentView}
           onViewReceipt={(url) => setViewReceiptModal(url)}
         />
@@ -1285,8 +1075,6 @@ export function App() {
         <BookingModal
           event={selectedEvent}
           bookings={bookings}
-          firebaseUser={firebaseUser}
-          onGoogleSignIn={handleGoogleSignIn}
           playerName={bookingPlayerName}
           setPlayerName={setBookingPlayerName}
           playerPhone={bookingPlayerPhone}

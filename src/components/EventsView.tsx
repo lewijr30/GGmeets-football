@@ -67,9 +67,15 @@ export const EventsView: React.FC<EventsViewProps> = ({
       {events.length === 0 ? (
         <div className="p-12 text-center bg-[#0E1526] rounded-3xl border border-[#1A263D] space-y-3">
           <div className="text-4xl">⚽</div>
-          <h3 className="text-lg font-bold text-white">No Matching Games Found</h3>
+          <h3 className="text-lg font-bold text-white">
+            {searchQuery || activeCategory !== 'All'
+              ? 'No Matching Games Found'
+              : 'No Available Matches Yet'}
+          </h3>
           <p className="text-slate-400 text-xs">
-            Try clearing your search or selecting a different match format.
+            {searchQuery || activeCategory !== 'All'
+              ? 'Try clearing your search or selecting a different match format.'
+              : 'New pickup games will appear here live as soon as the host posts them.'}
           </p>
         </div>
       ) : (

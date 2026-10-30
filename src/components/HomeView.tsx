@@ -126,8 +126,17 @@ export const HomeView: React.FC<HomeViewProps> = ({
               <img
                 src="https://images.unsplash.com/photo-1518091043644-c1d4457512c6?w=900"
                 alt="Turf Football Field"
-                className="object-cover h-[440px] w-full"
+                className="object-cover h-[400px] w-full opacity-75"
               />
+              <div className="absolute inset-x-0 bottom-0 p-6 bg-gradient-to-t from-[#0E1526] via-[#0E1526]/90 to-transparent">
+                <span className="inline-block px-3 py-1 rounded-full bg-[#00E676]/15 border border-[#00E676]/30 text-[#00E676] text-[10px] font-extrabold uppercase tracking-wider mb-2">
+                  Live Schedule
+                </span>
+                <h3 className="text-xl font-extrabold text-white">Next Match Dropping Soon</h3>
+                <p className="text-xs text-slate-300 mt-1">
+                  New pickup games appear here automatically as soon as the host posts them.
+                </p>
+              </div>
             </div>
           )}
         </div>

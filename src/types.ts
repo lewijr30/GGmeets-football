@@ -10,8 +10,6 @@ export type PaymentMethod = 'Telebirr' | 'CBE';
 
 export type EventCategory = 'All' | '5-a-side' | '7-a-side' | 'Full Field';
 
-export type PlayerPosition = 'Striker' | 'Midfielder' | 'Defender' | 'Goalkeeper';
-
 export interface PaymentAccountInfo {
   accountNumber: string;
   displayName: string;
@@ -31,7 +29,7 @@ export interface MatchEvent {
   booked_spots: number;
   verified_spots?: number;
   pending_spots?: number;
-  visibility?: 'public';
+  visibility?: 'live' | 'archived' | 'public';
   lastBookingId?: string;
   image_url: string;
   description: string;
@@ -40,7 +38,7 @@ export interface MatchEvent {
 
 export interface Booking {
   id: string;
-  ownerId?: string;
+  passId?: string;
   event_id: string;
   match_title: string;
   match_date?: string;
@@ -58,7 +56,6 @@ export interface Booking {
 export interface UserProfile {
   name: string;
   phone: string;
-  position: PlayerPosition | string;
   neighborhood: string;
   avatar: string;
   rating: number;

@@ -1,24 +1,87 @@
 {
   "entities": {
-    "AdminRole": {
-      "title": "AdminRole",
-      "description": "Trusted administrator membership document keyed by Firebase Auth UID.",
+    "AdminLock": {
+      "title": "AdminLock",
+      "description": "One-time bootstrap lock preventing unauthorized admin key registration after initial setup.",
       "type": "object",
       "properties": {
-        "uid": {
+        "id": {
           "type": "string",
-          "description": "Firebase Auth UID of the administrator.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
+          "description": "Singleton lock identifier ('admin_lock').",
+          "enum": ["admin_lock"],
+          "maxLength": 32
+        },
+        "locked": {
+          "type": "boolean",
+          "description": "Indicates bootstrap lock is active."
         },
         "createdAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when admin role was granted."
+          "description": "Server timestamp of bootstrap initialization."
         }
       },
-      "required": ["uid", "createdAt"]
+      "required": ["id", "locked", "createdAt"]
+    },
+    "AdminKey": {
+      "title": "AdminKey",
+      "description": "Server-derived 192-bit HMAC admin capability key record.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "192-bit capability key prefixed with adm-.",
+          "minLength": 52,
+          "maxLength": 52,
+          "pattern": "^adm-[a-f0-9]{48}$"
+        },
+        "lastAdminOpId": {
+          "type": "string",
+          "description": "Optional admin operation nonce when rotating keys.",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        }
+      },
+      "required": ["id", "createdAt"]
+    },
+    "AdminOp": {
+      "title": "AdminOp",
+      "description": "Unreadable one-time atomic write proof verifying possession of the server AdminKey.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique one-time operation nonce.",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]+$"
+        },
+        "adminKey": {
+          "type": "string",
+          "description": "Secret server-derived capability key verified against /admin_keys.",
+          "minLength": 52,
+          "maxLength": 52,
+          "pattern": "^adm-[a-f0-9]{48}$"
+        },
+        "action": {
+          "type": "string",
+          "description": "Audited server/admin mutation type.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the atomic batch."
+        }
+      },
+      "required": ["id", "adminKey", "action", "createdAt"]
     },
     "Match": {
       "title": "Match",
@@ -96,16 +159,23 @@
         },
         "visibility": {
           "type": "string",
-          "description": "Visibility state for query enforcement.",
-          "enum": ["public"],
-          "maxLength": 10
+          "description": "Visibility state for query enforcement ('live' or 'archived').",
+          "enum": ["live", "archived"],
+          "maxLength": 16
         },
         "lastBookingId": {
           "type": "string",
-          "description": "ID of most recent atomic player booking reservation.",
+          "description": "ID of most recent player booking reservation.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "lastAdminOpId": {
+          "type": "string",
+          "description": "ID of atomic AdminOp authorizing the latest write.",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]+$"
         },
         "createdAt": {
           "type": "string",
@@ -134,13 +204,14 @@
         "amenities",
         "visibility",
         "lastBookingId",
+        "lastAdminOpId",
         "createdAt",
         "updatedAt"
       ]
     },
     "Booking": {
       "title": "Booking",
-      "description": "Player spot registration and Telebirr/CBE payment receipt record containing player PII.",
+      "description": "Admin-isolated player spot registration and Telebirr/CBE payment receipt record containing player PII.",
       "type": "object",
       "properties": {
         "id": {
@@ -150,12 +221,19 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "ownerId": {
+        "inboxKey": {
           "type": "string",
-          "description": "Firebase Auth UID of the player who submitted the booking.",
-          "minLength": 1,
+          "description": "Parent admin capability inbox key for strict query enforcement.",
+          "minLength": 52,
+          "maxLength": 52,
+          "pattern": "^adm-[a-f0-9]{48}$"
+        },
+        "passId": {
+          "type": "string",
+          "description": "Paired non-PII capability pass identifier.",
+          "minLength": 20,
           "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
+          "pattern": "^pass-[a-zA-Z0-9_\\-]+$"
         },
         "event_id": {
           "type": "string",
@@ -196,7 +274,7 @@
         },
         "player_phone": {
           "type": "string",
-          "description": "Player phone number (PII isolated to owner and admin).",
+          "description": "Player phone number (PII isolated inside secret admin inbox).",
           "minLength": 3,
           "maxLength": 30
         },
@@ -222,6 +300,13 @@
           "minLength": 10,
           "maxLength": 700000
         },
+        "lastAdminOpId": {
+          "type": "string",
+          "description": "ID of atomic AdminOp authorizing the write.",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]+$"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -235,7 +320,8 @@
       },
       "required": [
         "id",
-        "ownerId",
+        "inboxKey",
+        "passId",
         "event_id",
         "match_title",
         "match_date",
@@ -247,23 +333,136 @@
         "payment_method",
         "status",
         "screenshot_url",
+        "lastAdminOpId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "BookingPass": {
+      "title": "BookingPass",
+      "description": "Split non-PII digital pass verification status document keyed by unguessable capability token.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Random capability pass token.",
+          "minLength": 20,
+          "maxLength": 128,
+          "pattern": "^pass-[a-zA-Z0-9_\\-]+$"
+        },
+        "bookingId": {
+          "type": "string",
+          "description": "Paired Booking document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "event_id": {
+          "type": "string",
+          "description": "Referenced Match document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "match_title": {
+          "type": "string",
+          "description": "Snapshot of match title.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "match_date": {
+          "type": "string",
+          "description": "Snapshot of match date.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "match_time": {
+          "type": "string",
+          "description": "Snapshot of match time.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "match_location": {
+          "type": "string",
+          "description": "Snapshot of match location.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "amount": {
+          "type": "number",
+          "description": "Payment amount in ETB."
+        },
+        "payment_method": {
+          "type": "string",
+          "description": "Mobile banking channel used.",
+          "enum": ["Telebirr", "CBE"],
+          "maxLength": 20
+        },
+        "status": {
+          "type": "string",
+          "description": "Live verification status synced from Host Admin review.",
+          "enum": ["pending", "approved", "rejected"],
+          "maxLength": 20
+        },
+        "lastAdminOpId": {
+          "type": "string",
+          "description": "ID of atomic AdminOp authorizing the write.",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest status review."
+        }
+      },
+      "required": [
+        "id",
+        "bookingId",
+        "event_id",
+        "match_title",
+        "match_date",
+        "match_time",
+        "match_location",
+        "amount",
+        "payment_method",
+        "status",
+        "lastAdminOpId",
         "createdAt",
         "updatedAt"
       ]
     }
   },
   "firestore": {
-    "/admins/{adminUid}": {
-      "schema": { "$ref": "#/entities/AdminRole" },
-      "description": "Trusted administrator lookup collection."
+    "/config/{configId}": {
+      "schema": { "$ref": "#/entities/AdminLock" },
+      "description": "Unreadable one-time bootstrap lock document."
+    },
+    "/admin_keys/{keyId}": {
+      "schema": { "$ref": "#/entities/AdminKey" },
+      "description": "Server-derived 192-bit capability keys (list forbidden)."
+    },
+    "/admin_ops/{opId}": {
+      "schema": { "$ref": "#/entities/AdminOp" },
+      "description": "Unreadable one-time atomic write proofs verifying server AdminKey possession."
     },
     "/matches/{matchId}": {
       "schema": { "$ref": "#/entities/Match" },
-      "description": "Public pickup football matches managed by Host Admin with atomic spot reservation counters."
+      "description": "Public live pickup football matches managed by server-verified AdminOp proofs."
     },
-    "/bookings/{bookingId}": {
+    "/admin_inboxes/{inboxKey}/bookings/{bookingId}": {
       "schema": { "$ref": "#/entities/Booking" },
-      "description": "Player booking receipts isolated strictly to the booking owner and Host Admin."
+      "description": "Private player booking receipts isolated inside the 192-bit server-secret admin inbox."
+    },
+    "/booking_passes/{passId}": {
+      "schema": { "$ref": "#/entities/BookingPass" },
+      "description": "Split non-PII digital pass status documents readable only by exact capability passId (list forbidden)."
     }
   }
 }

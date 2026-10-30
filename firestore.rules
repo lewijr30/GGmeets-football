@@ -13,6 +13,18 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidAdminKey(id) {
+      return id is string && id.size() == 52 && id.matches('^adm-[a-f0-9]{48}$');
+    }
+
+    function isValidOpId(id) {
+      return id is string && id.size() >= 6 && id.size() <= 128 && id.matches('^op-[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidPassId(id) {
+      return id is string && id.size() >= 20 && id.size() <= 128 && id.matches('^pass-[a-zA-Z0-9_\\-]+$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -21,29 +33,39 @@ service cloud.firestore {
       return resource.data;
     }
 
-    function isSignedIn() {
-      return request.auth != null;
+    // Verifies that the current atomic batch creates a brand-new /admin_ops/{opId}
+    // proving possession of a registered 192-bit server AdminKey without exposing it.
+    function isAuthorizedByAdminOp(opId) {
+      return isValidOpId(opId) &&
+        !exists(/databases/$(database)/documents/admin_ops/$(opId)) &&
+        existsAfter(/databases/$(database)/documents/admin_ops/$(opId));
     }
 
-    function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+    // Schema Validation Blueprint: AdminLock
+    function isValidAdminLock(data) {
+      return data.keys().hasAll(['id', 'locked', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'locked', 'createdAt']) &&
+        data.id is string && data.id.size() <= 32 && data.id == 'admin_lock' &&
+        data.locked is bool && data.locked == true &&
+        data.createdAt is timestamp;
     }
 
-    function isBootstrappedAdmin() {
-      return isVerifiedUser() && request.auth.token.email == 'lewijunior80@gmail.com';
+    // Schema Validation Blueprint: AdminKey
+    function isValidAdminKeyDoc(data) {
+      return data.keys().hasAll(['id', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'lastAdminOpId', 'createdAt']) &&
+        isValidAdminKey(data.id) &&
+        (!('lastAdminOpId' in data) || isValidOpId(data.lastAdminOpId)) &&
+        data.createdAt is timestamp;
     }
 
-    function isAdmin() {
-      return isBootstrappedAdmin() || (
-        isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
-    }
-
-    // Schema Validation Blueprint: AdminRole
-    function isValidAdminRole(data) {
-      return data.keys().hasAll(['uid', 'createdAt']) &&
-        data.keys().hasOnly(['uid', 'createdAt']) &&
-        isValidId(data.uid) &&
+    // Schema Validation Blueprint: AdminOp
+    function isValidAdminOp(data) {
+      return data.keys().hasAll(['id', 'adminKey', 'action', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'adminKey', 'action', 'createdAt']) &&
+        isValidOpId(data.id) &&
+        isValidAdminKey(data.adminKey) &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 40 &&
         data.createdAt is timestamp;
     }
 
@@ -65,6 +87,7 @@ service cloud.firestore {
           'amenities',
           'visibility',
           'lastBookingId',
+          'lastAdminOpId',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -84,6 +107,7 @@ service cloud.firestore {
           'amenities',
           'visibility',
           'lastBookingId',
+          'lastAdminOpId',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -103,17 +127,20 @@ service cloud.firestore {
         data.description is string && data.description.size() >= 0 && data.description.size() <= 1000 &&
         data.amenities is list && data.amenities.size() <= 10 &&
         (data.amenities.size() == 0 || (data.amenities[0] is string && data.amenities[0].size() <= 60)) &&
-        data.visibility is string && data.visibility.size() <= 10 && data.visibility == 'public' &&
+        data.visibility is string && data.visibility.size() <= 16 &&
+        data.visibility in ['live', 'archived'] &&
         isValidId(data.lastBookingId) &&
+        isValidOpId(data.lastAdminOpId) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
 
-    // Schema Validation Blueprint: Booking
+    // Schema Validation Blueprint: Booking (Isolated inside 192-bit Server-Secret Admin Inbox)
     function isValidBooking(data) {
       return data.keys().hasAll([
           'id',
-          'ownerId',
+          'inboxKey',
+          'passId',
           'event_id',
           'match_title',
           'match_date',
@@ -125,12 +152,14 @@ service cloud.firestore {
           'payment_method',
           'status',
           'screenshot_url',
+          'lastAdminOpId',
           'createdAt',
           'updatedAt'
         ]) &&
         data.keys().hasOnly([
           'id',
-          'ownerId',
+          'inboxKey',
+          'passId',
           'event_id',
           'match_title',
           'match_date',
@@ -142,11 +171,13 @@ service cloud.firestore {
           'payment_method',
           'status',
           'screenshot_url',
+          'lastAdminOpId',
           'createdAt',
           'updatedAt'
         ]) &&
         isValidId(data.id) &&
-        isValidId(data.ownerId) &&
+        isValidAdminKey(data.inboxKey) &&
+        isValidPassId(data.passId) &&
         isValidId(data.event_id) &&
         data.match_title is string && data.match_title.size() >= 1 && data.match_title.size() <= 120 &&
         data.match_date is string && data.match_date.size() >= 1 && data.match_date.size() <= 60 &&
@@ -160,99 +191,191 @@ service cloud.firestore {
         data.status is string && data.status.size() <= 20 &&
         data.status in ['pending', 'approved', 'rejected'] &&
         data.screenshot_url is string && data.screenshot_url.size() >= 10 && data.screenshot_url.size() <= 700000 &&
+        isValidOpId(data.lastAdminOpId) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
 
-    // Trusted Admin Membership Collection (Read-Only to Self; No Client Self-Escalation)
-    match /admins/{adminUid} {
-      allow get: if isVerifiedUser() && isValidId(adminUid) && request.auth.uid == adminUid && isValidAdminRole(existing());
-      allow list: if false;
-      allow create, update, delete: if false;
+    // Schema Validation Blueprint: BookingPass (Split Non-PII Digital Pass Status)
+    function isValidBookingPass(data) {
+      return data.keys().hasAll([
+          'id',
+          'bookingId',
+          'event_id',
+          'match_title',
+          'match_date',
+          'match_time',
+          'match_location',
+          'amount',
+          'payment_method',
+          'status',
+          'lastAdminOpId',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'bookingId',
+          'event_id',
+          'match_title',
+          'match_date',
+          'match_time',
+          'match_location',
+          'amount',
+          'payment_method',
+          'status',
+          'lastAdminOpId',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidPassId(data.id) &&
+        isValidId(data.bookingId) &&
+        isValidId(data.event_id) &&
+        data.match_title is string && data.match_title.size() >= 1 && data.match_title.size() <= 120 &&
+        data.match_date is string && data.match_date.size() >= 1 && data.match_date.size() <= 60 &&
+        data.match_time is string && data.match_time.size() >= 1 && data.match_time.size() <= 60 &&
+        data.match_location is string && data.match_location.size() >= 1 && data.match_location.size() <= 160 &&
+        data.amount is number && data.amount >= 0 && data.amount <= 100000 &&
+        data.payment_method is string && data.payment_method.size() <= 20 &&
+        data.payment_method in ['Telebirr', 'CBE'] &&
+        data.status is string && data.status.size() <= 20 &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        isValidOpId(data.lastAdminOpId) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
     }
 
-    // Public Pickup Football Matches Collection
-    match /matches/{matchId} {
-      allow get: if isValidId(matchId) && existing().visibility == 'public';
-      allow list: if existing().visibility == 'public';
+    // Unreadable One-Time Bootstrap Lock
+    match /config/{configId} {
+      allow get, list: if false;
+      allow create: if configId == 'admin_lock' &&
+        isValidAdminLock(incoming()) &&
+        incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
 
-      allow create: if isVerifiedUser() &&
-        isValidId(matchId) &&
+    // Server-Derived 192-bit Admin Capability Keys (List Forbidden)
+    match /admin_keys/{keyId} {
+      allow get: if isValidAdminKey(keyId);
+      allow list: if false;
+      allow create: if isValidAdminKey(keyId) &&
+        isValidAdminKeyDoc(incoming()) &&
+        incoming().id == keyId &&
+        incoming().createdAt == request.time && (
+          (!exists(/databases/$(database)/documents/config/admin_lock) &&
+            existsAfter(/databases/$(database)/documents/config/admin_lock)) ||
+          ('lastAdminOpId' in incoming() && isAuthorizedByAdminOp(incoming().lastAdminOpId))
+        );
+      allow update, delete: if false;
+    }
+
+    // Unreadable One-Time Atomic Write Proofs
+    match /admin_ops/{opId} {
+      allow get, list: if false;
+      allow create: if isValidOpId(opId) &&
+        isValidAdminOp(incoming()) &&
+        incoming().id == opId &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/admin_keys/$(incoming().adminKey));
+      allow update, delete: if false;
+    }
+
+    // Public Live Pickup Football Matches Collection
+    match /matches/{matchId} {
+      allow get: if isValidId(matchId) && existing().visibility == 'live';
+      allow list: if existing().visibility == 'live';
+
+      allow create: if isValidId(matchId) &&
         isValidMatch(incoming()) &&
         incoming().id == matchId &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        isAdmin();
+        isAuthorizedByAdminOp(incoming().lastAdminOpId);
 
       allow update: if isValidMatch(incoming()) &&
-        isVerifiedUser() &&
         isValidId(matchId) &&
         incoming().id == existing().id &&
         incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time && (
-          // Action 1: Host Admin match management / spot verification / limit change
-          (incoming().diff(existing()).affectedKeys().hasOnly([
-              'title',
-              'event_type',
-              'date',
-              'time',
-              'location',
-              'price',
-              'total_spots',
-              'verified_spots',
-              'pending_spots',
-              'image_url',
-              'description',
-              'amenities',
-              'lastBookingId',
-              'updatedAt'
-            ]) && isAdmin()) ||
-          // Action 2: Verified Player atomic spot reservation paired with Booking creation
-          (incoming().diff(existing()).affectedKeys().hasOnly(['pending_spots', 'lastBookingId', 'updatedAt']) &&
-            incoming().pending_spots == existing().pending_spots + 1 &&
-            (existing().verified_spots + existing().pending_spots) < existing().total_spots &&
-            !exists(/databases/$(database)/documents/bookings/$(incoming().lastBookingId)) &&
-            existsAfter(/databases/$(database)/documents/bookings/$(incoming().lastBookingId)) &&
-            getAfter(/databases/$(database)/documents/bookings/$(incoming().lastBookingId)).data.ownerId == request.auth.uid &&
-            getAfter(/databases/$(database)/documents/bookings/$(incoming().lastBookingId)).data.event_id == matchId)
-        );
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title',
+          'event_type',
+          'date',
+          'time',
+          'location',
+          'price',
+          'total_spots',
+          'verified_spots',
+          'pending_spots',
+          'image_url',
+          'description',
+          'amenities',
+          'visibility',
+          'lastBookingId',
+          'lastAdminOpId',
+          'updatedAt'
+        ]) &&
+        isAuthorizedByAdminOp(incoming().lastAdminOpId);
 
-      allow delete: if isVerifiedUser() && isValidId(matchId) && isAdmin();
+      allow delete: if false;
     }
 
-    // Player Bookings & Payment Receipts Collection (PII Strictly Isolated to Owner & Admin)
-    match /bookings/{bookingId} {
-      allow get: if isVerifiedUser() &&
+    // Private Admin Inbox Bookings Collection (PII Isolated Under 192-bit Server Secret)
+    match /admin_inboxes/{inboxKey}/bookings/{bookingId} {
+      allow get: if isValidAdminKey(inboxKey) &&
         isValidId(bookingId) &&
-        (existing().ownerId == request.auth.uid || isAdmin());
+        existing().inboxKey == inboxKey;
 
-      // Zero DB lookups inside allow list (Cost-Optimization Clause compliant)
-      allow list: if isVerifiedUser() &&
-        (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+      allow list: if isValidAdminKey(inboxKey) &&
+        existing().inboxKey == inboxKey;
 
-      allow create: if isVerifiedUser() &&
+      allow create: if isValidAdminKey(inboxKey) &&
         isValidId(bookingId) &&
         isValidBooking(incoming()) &&
         incoming().id == bookingId &&
-        incoming().ownerId == request.auth.uid &&
+        incoming().inboxKey == inboxKey &&
         incoming().status == 'pending' &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        exists(/databases/$(database)/documents/matches/$(incoming().event_id)) &&
-        getAfter(/databases/$(database)/documents/matches/$(incoming().event_id)).data.lastBookingId == bookingId &&
-        getAfter(/databases/$(database)/documents/matches/$(incoming().event_id)).data.pending_spots ==
-          get(/databases/$(database)/documents/matches/$(incoming().event_id)).data.pending_spots + 1;
+        isAuthorizedByAdminOp(incoming().lastAdminOpId);
 
       allow update: if isValidBooking(incoming()) &&
-        isVerifiedUser() &&
+        isValidAdminKey(inboxKey) &&
         isValidId(bookingId) &&
         incoming().id == existing().id &&
-        incoming().ownerId == existing().ownerId &&
+        incoming().inboxKey == existing().inboxKey &&
+        incoming().passId == existing().passId &&
         incoming().event_id == existing().event_id &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) &&
-        isAdmin();
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'lastAdminOpId', 'updatedAt']) &&
+        isAuthorizedByAdminOp(incoming().lastAdminOpId);
+
+      allow delete: if false;
+    }
+
+    // Split Non-PII Capability Pass Status Collection (Single-Doc Get Only; List Forbidden)
+    match /booking_passes/{passId} {
+      allow get: if isValidPassId(passId);
+      allow list: if false;
+
+      allow create: if isValidPassId(passId) &&
+        isValidBookingPass(incoming()) &&
+        incoming().id == passId &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAuthorizedByAdminOp(incoming().lastAdminOpId);
+
+      allow update: if isValidBookingPass(incoming()) &&
+        isValidPassId(passId) &&
+        incoming().id == existing().id &&
+        incoming().bookingId == existing().bookingId &&
+        incoming().event_id == existing().event_id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'lastAdminOpId', 'updatedAt']) &&
+        isAuthorizedByAdminOp(incoming().lastAdminOpId);
 
       allow delete: if false;
     }

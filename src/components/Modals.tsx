@@ -1,4 +1,3 @@
-import type { User } from 'firebase/auth';
 import React from 'react';
 import { PAYMENT_INFO } from '../constants/data';
 import { Booking, MatchEvent, PaymentMethod } from '../types';
@@ -8,8 +7,6 @@ import { SpotTracker } from './SpotTracker';
 interface BookingModalProps {
   event: MatchEvent;
   bookings: Booking[];
-  firebaseUser: User | null;
-  onGoogleSignIn: () => Promise<void>;
   playerName: string;
   setPlayerName: (val: string) => void;
   playerPhone: string;
@@ -27,8 +24,6 @@ interface BookingModalProps {
 export const BookingModal: React.FC<BookingModalProps> = ({
   event,
   bookings,
-  firebaseUser,
-  onGoogleSignIn,
   playerName,
   setPlayerName,
   playerPhone,
@@ -82,26 +77,6 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               className="mt-2 px-5 py-2.5 rounded-xl bg-[#111A2E] text-white text-xs font-bold border border-[#1E2D4A] cursor-pointer"
             >
               Close
-            </button>
-          </div>
-        ) : !firebaseUser ? (
-          <div className="p-6 rounded-2xl bg-[#080D1A] border border-[#1E2D4A] text-center space-y-4">
-            <div className="text-3xl">🎟️</div>
-            <div className="space-y-1">
-              <h5 className="text-base font-extrabold text-white">
-                Sign in to Reserve Your Digital Pass
-              </h5>
-              <p className="text-xs text-slate-400 leading-relaxed">
-                Connect with Google so your verified pitch pass syncs privately to your phone and
-                the host receives your payment notification immediately.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={onGoogleSignIn}
-              className="w-full py-3.5 rounded-2xl bg-[#00E676] hover:bg-[#00c965] text-black font-extrabold text-xs uppercase tracking-wider shadow-xl shadow-[#00E676]/20 transition cursor-pointer"
-            >
-              Continue with Google →
             </button>
           </div>
         ) : (
