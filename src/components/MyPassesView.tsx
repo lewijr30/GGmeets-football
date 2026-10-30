@@ -1,9 +1,11 @@
 import React from 'react';
-import { AppView, Booking, MatchEvent } from '../types';
+import { formatTelegramBadge } from '../lib/telegramAuth';
+import { AppView, Booking, MatchEvent, TelegramAccount } from '../types';
 
 interface MyPassesViewProps {
   bookings: Booking[];
   events: MatchEvent[];
+  telegramAccount: TelegramAccount;
   setCurrentView: (view: AppView) => void;
   onViewReceipt: (url: string) => void;
 }
@@ -11,15 +13,22 @@ interface MyPassesViewProps {
 export const MyPassesView: React.FC<MyPassesViewProps> = ({
   bookings,
   events,
+  telegramAccount,
   setCurrentView,
   onViewReceipt,
 }) => {
   return (
     <main className="flex-1 max-w-4xl mx-auto px-4 sm:px-6 py-10 w-full">
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between gap-3 mb-8 flex-wrap">
         <div>
           <h2 className="text-3xl font-extrabold text-white">My Match Passes</h2>
-          <p className="text-slate-400 text-sm mt-1">Show your digital pass at the pitch gate.</p>
+          <p className="text-slate-400 text-xs sm:text-sm mt-1">
+            Private passes for{' '}
+            <span className="font-mono font-bold text-[#2AABEE]">
+              ✈️ {formatTelegramBadge(telegramAccount)}
+            </span>{' '}
+            <span className="font-mono text-slate-500">(ID #{telegramAccount.id})</span>
+          </p>
         </div>
         <button
           type="button"
@@ -35,7 +44,9 @@ export const MyPassesView: React.FC<MyPassesViewProps> = ({
           <div className="text-5xl">🎟️</div>
           <h3 className="text-xl font-bold text-white">No Match Passes Yet</h3>
           <p className="text-slate-400 text-xs max-w-sm mx-auto">
-            You have not registered for any games yet. Browse matches and reserve your spot.
+            No bookings have been made with{' '}
+            <span className="font-mono text-[#2AABEE]">{formatTelegramBadge(telegramAccount)}</span>{' '}
+            yet. Browse matches and reserve your spot.
           </p>
           <button
             type="button"

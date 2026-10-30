@@ -8,6 +8,7 @@ interface NavbarProps {
   myBookingsCount: number;
   userProfile: UserProfile;
   telegramAccount: TelegramAccount;
+  onSwitchTelegram: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -16,6 +17,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   myBookingsCount,
   userProfile,
   telegramAccount,
+  onSwitchTelegram,
 }) => {
   return (
     <>
@@ -78,25 +80,35 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           </nav>
 
-          <div
-            onClick={() => setCurrentView('profile')}
-            className="flex items-center space-x-2.5 p-1.5 pr-3 rounded-xl bg-[#111A2E] border border-[#1E2D4A] hover:border-[#00E676]/50 cursor-pointer transition"
-          >
-            <img
-              src={userProfile.avatar}
-              alt="Profile"
-              className="w-8 h-8 rounded-lg object-cover border border-[#00E676]/50"
-            />
-            <div className="flex flex-col text-left leading-tight">
-              <span className="text-xs font-bold text-white hidden sm:inline">
-                {userProfile.name.trim()
-                  ? userProfile.name.trim().split(' ')[0]
-                  : telegramAccount.firstName}
-              </span>
-              <span className="text-[10px] font-mono font-bold text-[#2AABEE]">
-                ✈️ {formatTelegramBadge(telegramAccount)}
-              </span>
+          <div className="flex items-center gap-1.5">
+            <div
+              onClick={() => setCurrentView('profile')}
+              className="flex items-center space-x-2.5 p-1.5 pr-3 rounded-xl bg-[#111A2E] border border-[#1E2D4A] hover:border-[#00E676]/50 cursor-pointer transition"
+            >
+              <img
+                src={userProfile.avatar}
+                alt="Profile"
+                className="w-8 h-8 rounded-lg object-cover border border-[#00E676]/50"
+              />
+              <div className="flex flex-col text-left leading-tight">
+                <span className="text-xs font-bold text-white hidden sm:inline">
+                  {userProfile.name.trim()
+                    ? userProfile.name.trim().split(' ')[0]
+                    : telegramAccount.firstName}
+                </span>
+                <span className="text-[10px] font-mono font-bold text-[#2AABEE]">
+                  ✈️ {formatTelegramBadge(telegramAccount)}
+                </span>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={onSwitchTelegram}
+              title="Switch Telegram Account"
+              className="px-2.5 py-2.5 rounded-xl bg-[#111A2E] hover:bg-red-500/20 text-slate-400 hover:text-red-300 border border-[#1E2D4A] hover:border-red-500/30 text-xs font-bold transition cursor-pointer"
+            >
+              ⇄
+            </button>
           </div>
         </div>
       </header>

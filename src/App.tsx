@@ -15,7 +15,7 @@ import { MyPassesView } from './components/MyPassesView';
 import { Navbar } from './components/Navbar';
 import { ProfileView } from './components/ProfileView';
 import { TelegramVerifyGate } from './components/TelegramVerifyGate';
-import { DEFAULT_GAMES, DEFAULT_PROFILE } from './constants/data';
+import { DEFAULT_GAMES } from './constants/data';
 import {
   MAX_PHONE_LENGTH,
   MAX_PLAYER_NAME_LENGTH,
@@ -42,11 +42,16 @@ import {
 } from './lib/serverlessStore';
 import {
   clearVerifiedTelegramAccount,
-  consumeTelegramUrlAuthResult,
+  createBlankProfile,
   formatTelegramBadge,
-  getTelegramDisplayFullName,
   initTelegramMiniApp,
-  loadVerifiedTelegramAccount,
+  isMiniAppAccountSignedOutInSession,
+  loadPassesForTelegramAccount,
+  loadProfileForTelegramAccount,
+  loadVerifiedAccountById,
+  resolveInitialTelegramAccount,
+  savePassesForTelegramAccount,
+  saveProfileForTelegramAccount,
   saveVerifiedTelegramAccount,
 } from './lib/telegramAuth';
 import {
@@ -66,17 +71,11 @@ import { getMatchCapacity } from './utils/capacity';
 import { compressImageFile } from './utils/image';
 
 const ADMIN_INBOX_KEY_STORAGE = 'gg_admin_inbox_key_v2';
-const LOCAL_PASSES_STORAGE_KEY = 'gg_telegram_passes_v1';
-const PROFILE_STORAGE_KEY = 'gg_telegram_profile_v1';
 const SAFE_COMPRESSED_IMAGE_CHARS = 520000;
 
-function loadFromStorage<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
+interface ScopedPassesState {
+  ownerId: number | null;
+  items: Booking[];
 }
 
 function getStoredAdminInboxKey(): string | null {
@@ -162,41 +161,48 @@ export function App() {
 
   const isAdminUnlocked = Boolean(adminContext);
 
-  // Telegram Verification State
-  const [detectedWebAppAccount] = useState<TelegramAccount | null>(() => initTelegramMiniApp());
-  const [telegramAccount, setTelegramAccount] = useState<TelegramAccount | null>(() => {
-    const fromHash = consumeTelegramUrlAuthResult();
-    if (fromHash) {
-      saveVerifiedTelegramAccount(fromHash);
-      return fromHash;
-    }
-    const stored = loadVerifiedTelegramAccount();
+  // Telegram Verification State — strictly isolated per numeric Telegram account ID
+  const [initialBoot] = useState<{
+    miniApp: TelegramAccount | null;
+    verified: TelegramAccount | null;
+    profile: UserProfile;
+    passes: ScopedPassesState;
+  }>(() => {
     const miniApp = initTelegramMiniApp();
-    if (miniApp && stored && stored.id === miniApp.id) {
-      saveVerifiedTelegramAccount(miniApp);
-      return miniApp;
-    }
-    return stored;
+    const verified = resolveInitialTelegramAccount();
+    const profile = verified ? loadProfileForTelegramAccount(verified) : createBlankProfile();
+    const passes: ScopedPassesState = verified
+      ? { ownerId: verified.id, items: loadPassesForTelegramAccount(verified.id) }
+      : { ownerId: null, items: [] };
+    return { miniApp, verified, profile, passes };
   });
+
+  const [detectedWebAppAccount, setDetectedWebAppAccount] = useState<TelegramAccount | null>(
+    initialBoot.miniApp
+  );
+  const [telegramAccount, setTelegramAccount] = useState<TelegramAccount | null>(
+    initialBoot.verified
+  );
   const [telegramBotConfig, setTelegramBotConfig] = useState<TelegramBotConfig | null>(null);
 
   const [events, setEvents] = useState<MatchEvent[]>(DEFAULT_GAMES);
   const [bookings, setBookings] = useState<Booking[]>([]);
-  const [myLocalPasses, setMyLocalPasses] = useState<Booking[]>(() =>
-    loadFromStorage<Booking[]>(LOCAL_PASSES_STORAGE_KEY, [])
+  const [scopedPasses, setScopedPasses] = useState<ScopedPassesState>(initialBoot.passes);
+  const [userProfile, setUserProfile] = useState<UserProfile>(initialBoot.profile);
+
+  const [bookingPlayerName, setBookingPlayerName] = useState<string>(
+    initialBoot.profile.name || ''
   );
-  const [userProfile, setUserProfile] = useState<UserProfile>(() =>
-    loadFromStorage(PROFILE_STORAGE_KEY, DEFAULT_PROFILE)
+  const [bookingPlayerPhone, setBookingPlayerPhone] = useState<string>(
+    initialBoot.profile.phone || ''
   );
 
-  const [bookingPlayerName, setBookingPlayerName] = useState<string>(() => {
-    const saved = loadFromStorage(PROFILE_STORAGE_KEY, DEFAULT_PROFILE);
-    return saved.name || '';
-  });
-  const [bookingPlayerPhone, setBookingPlayerPhone] = useState<string>(() => {
-    const saved = loadFromStorage(PROFILE_STORAGE_KEY, DEFAULT_PROFILE);
-    return saved.phone || '';
-  });
+  const myLocalPasses = useMemo<Booking[]>(() => {
+    if (!telegramAccount || scopedPasses.ownerId !== telegramAccount.id) {
+      return [];
+    }
+    return scopedPasses.items;
+  }, [telegramAccount, scopedPasses]);
 
   const [activeCategory, setActiveCategory] = useState<EventCategory>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -264,40 +270,82 @@ export function App() {
     }, 4000);
   }, []);
 
-  // Sync verified Telegram account profile fields when first verified
+  // Atomically switch all client state to the verified Telegram account (or clear on logout)
+  const applyTelegramSession = useCallback((nextAccount: TelegramAccount | null) => {
+    if (!nextAccount) {
+      setTelegramAccount(null);
+      setUserProfile(createBlankProfile());
+      setScopedPasses({ ownerId: null, items: [] });
+      setBookingPlayerName('');
+      setBookingPlayerPhone('');
+      setSelectedEventId(null);
+      setBookingModalOpen(false);
+      setDetailModalEventId(null);
+      setReceiptFilePreview(null);
+      setBookingError(null);
+      setCurrentView('home');
+      return;
+    }
+
+    saveVerifiedTelegramAccount(nextAccount);
+    const isolatedProfile = loadProfileForTelegramAccount(nextAccount);
+    const isolatedPasses = loadPassesForTelegramAccount(nextAccount.id);
+    saveProfileForTelegramAccount(nextAccount.id, isolatedProfile);
+
+    setTelegramAccount(nextAccount);
+    setUserProfile(isolatedProfile);
+    setScopedPasses({ ownerId: nextAccount.id, items: isolatedPasses });
+    setBookingPlayerName(isolatedProfile.name || '');
+    setBookingPlayerPhone(isolatedProfile.phone || '');
+    setSelectedEventId(null);
+    setBookingModalOpen(false);
+    setReceiptFilePreview(null);
+    setBookingError(null);
+  }, []);
+
   const handleTelegramVerified = useCallback(
     (account: TelegramAccount) => {
-      saveVerifiedTelegramAccount(account);
-      setTelegramAccount(account);
-
-      const tgFullName = getTelegramDisplayFullName(account);
-      setUserProfile((prev) => {
-        const nextName = prev.name.trim() ? prev.name : tgFullName;
-        const nextAvatar =
-          account.photoUrl && prev.avatar === DEFAULT_PROFILE.avatar
-            ? account.photoUrl
-            : prev.avatar;
-        return {
-          ...prev,
-          name: nextName,
-          avatar: nextAvatar,
-          telegramId: account.id,
-          telegramUsername: account.username,
-        };
-      });
-      setBookingPlayerName((prev) => (prev.trim() ? prev : tgFullName));
-      showToast(`✓ Telegram verified (${formatTelegramBadge(account)})!`);
+      applyTelegramSession(account);
+      showToast(`✓ Logged in as ${formatTelegramBadge(account)}!`);
     },
-    [showToast]
+    [applyTelegramSession, showToast]
   );
 
   const handleDisconnectTelegram = useCallback(() => {
-    clearVerifiedTelegramAccount();
-    setTelegramAccount(null);
-    setBookingModalOpen(false);
-    setCurrentView('home');
-    showToast('Telegram account disconnected. Verify again to continue.');
-  }, [showToast]);
+    clearVerifiedTelegramAccount(telegramAccount?.id);
+    applyTelegramSession(null);
+    setDetectedWebAppAccount(initTelegramMiniApp());
+    showToast('Switched out of Telegram account. Verify another account to continue.');
+  }, [telegramAccount, applyTelegramSession, showToast]);
+
+  // Detect live Telegram Mini App account switches automatically on focus / visibility change
+  useEffect(() => {
+    const syncMiniAppUser = () => {
+      const liveMiniApp = initTelegramMiniApp();
+      setDetectedWebAppAccount(liveMiniApp);
+      if (!liveMiniApp) return;
+
+      // If another Telegram account was previously active, immediately switch away from it!
+      if (telegramAccount && telegramAccount.id !== liveMiniApp.id) {
+        if (!isMiniAppAccountSignedOutInSession(liveMiniApp.id)) {
+          const alreadyVerified = loadVerifiedAccountById(liveMiniApp.id);
+          if (alreadyVerified && alreadyVerified.id === liveMiniApp.id) {
+            applyTelegramSession(liveMiniApp);
+            return;
+          }
+        }
+        applyTelegramSession(null);
+      }
+    };
+
+    syncMiniAppUser();
+    window.addEventListener('focus', syncMiniAppUser);
+    document.addEventListener('visibilitychange', syncMiniAppUser);
+    return () => {
+      window.removeEventListener('focus', syncMiniAppUser);
+      document.removeEventListener('visibilitychange', syncMiniAppUser);
+    };
+  }, [telegramAccount, applyTelegramSession]);
 
   // Real-time Firestore listener for public Telegram Bot configuration
   useEffect(() => {
@@ -323,14 +371,11 @@ export function App() {
     return () => unsub();
   }, []);
 
-  // Persist player's local passes in localStorage
+  // Persist player's passes ONLY into the active Telegram account's isolated storage bucket
   useEffect(() => {
-    try {
-      localStorage.setItem(LOCAL_PASSES_STORAGE_KEY, JSON.stringify(myLocalPasses));
-    } catch (err) {
-      console.warn('Failed to persist local passes:', err);
-    }
-  }, [myLocalPasses]);
+    if (!telegramAccount || scopedPasses.ownerId !== telegramAccount.id) return;
+    savePassesForTelegramAccount(telegramAccount.id, scopedPasses.items);
+  }, [telegramAccount, scopedPasses]);
 
   const myPassIdsKey = useMemo(
     () =>
@@ -341,9 +386,10 @@ export function App() {
     [myLocalPasses]
   );
 
-  // Live Firestore status listeners for the player's local passes (works inside Telegram WebView & ais-pre)
+  // Live Firestore status listeners for the active Telegram account's passes
   useEffect(() => {
-    if (!myPassIdsKey) return;
+    const activeTelegramId = telegramAccount?.id ?? null;
+    if (!activeTelegramId || !myPassIdsKey) return;
 
     const passIds = myPassIdsKey.split(',').filter(Boolean);
     const unsubs = passIds.map((passId) =>
@@ -356,16 +402,17 @@ export function App() {
           if (!['pending', 'approved', 'rejected'].includes(rawStatus)) return;
           const nextStatus = rawStatus as BookingStatus;
 
-          setMyLocalPasses((prev) => {
+          setScopedPasses((prev) => {
+            if (prev.ownerId !== activeTelegramId) return prev;
             let changed = false;
-            const updated = prev.map((item) => {
+            const updated = prev.items.map((item) => {
               if (item.passId === passId && item.status !== nextStatus) {
                 changed = true;
                 return { ...item, status: nextStatus };
               }
               return item;
             });
-            return changed ? updated : prev;
+            return changed ? { ownerId: activeTelegramId, items: updated } : prev;
           });
         },
         (error) => {
@@ -379,7 +426,7 @@ export function App() {
         unsub();
       }
     };
-  }, [myPassIdsKey]);
+  }, [telegramAccount?.id, myPassIdsKey]);
 
   // Real-time Firestore listener for live matches
   useEffect(() => {
@@ -630,13 +677,11 @@ export function App() {
     }
   }, [isCheckingLock, pathname, isAdminUnlocked, navigate]);
 
+  // Persist profile ONLY into the active Telegram account's isolated storage bucket
   useEffect(() => {
-    try {
-      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(userProfile));
-    } catch (err) {
-      console.warn('Failed to persist profile:', err);
-    }
-  }, [userProfile]);
+    if (!telegramAccount || userProfile.telegramId !== telegramAccount.id) return;
+    saveProfileForTelegramAccount(telegramAccount.id, userProfile);
+  }, [telegramAccount, userProfile]);
 
   const handleRequestBrowserNotifications = async () => {
     if (typeof Notification === 'undefined') {
@@ -859,7 +904,13 @@ export function App() {
         return;
       }
 
-      setMyLocalPasses((prev) => [createdBooking, ...prev]);
+      setScopedPasses((prev) => {
+        const baseItems = prev.ownerId === telegramAccount.id ? prev.items : [];
+        return {
+          ownerId: telegramAccount.id,
+          items: [createdBooking, ...baseItems],
+        };
+      });
       setUserProfile((prev) => ({
         ...prev,
         name: cleanName,
@@ -963,9 +1014,16 @@ export function App() {
   };
 
   const handleSaveProfile = (updatedProfile: UserProfile) => {
-    setUserProfile(updatedProfile);
-    setBookingPlayerName(updatedProfile.name);
-    setBookingPlayerPhone(updatedProfile.phone);
+    if (!telegramAccount) return;
+    const scoped: UserProfile = {
+      ...updatedProfile,
+      telegramId: telegramAccount.id,
+      telegramUsername: telegramAccount.username,
+    };
+    setUserProfile(scoped);
+    saveProfileForTelegramAccount(telegramAccount.id, scoped);
+    setBookingPlayerName(scoped.name);
+    setBookingPlayerPhone(scoped.phone);
     showToast('Profile details saved!');
   };
 
@@ -1240,11 +1298,13 @@ export function App() {
       )}
 
       <Navbar
+        key={`nav-${telegramAccount.id}`}
         currentView={currentView}
         setCurrentView={setCurrentView}
         myBookingsCount={myLocalPasses.length}
         userProfile={userProfile}
         telegramAccount={telegramAccount}
+        onSwitchTelegram={handleDisconnectTelegram}
       />
 
       {currentView === 'home' && (
@@ -1272,8 +1332,10 @@ export function App() {
 
       {currentView === 'my-tickets' && (
         <MyPassesView
+          key={`passes-${telegramAccount.id}`}
           bookings={myLocalPasses}
           events={events}
+          telegramAccount={telegramAccount}
           setCurrentView={setCurrentView}
           onViewReceipt={(url) => {
             setInspectedBooking(null);
@@ -1284,6 +1346,7 @@ export function App() {
 
       {currentView === 'profile' && (
         <ProfileView
+          key={`profile-${telegramAccount.id}`}
           userProfile={userProfile}
           telegramAccount={telegramAccount}
           onSaveProfile={handleSaveProfile}
@@ -1294,6 +1357,7 @@ export function App() {
 
       {bookingModalOpen && selectedEvent && (
         <BookingModal
+          key={`book-${selectedEvent.id}-${telegramAccount.id}`}
           event={selectedEvent}
           bookings={bookings}
           telegramAccount={telegramAccount}

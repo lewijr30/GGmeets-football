@@ -129,8 +129,8 @@ export const TelegramVerifyGate: React.FC<TelegramVerifyGateProps> = ({
               Verify Your Telegram Account
             </h2>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Players must verify with their Telegram account before browsing matches and claiming
-              spots. Your verified Telegram handle is linked to your digital match pass.
+              Every Telegram account gets its own unique player profile and private match passes.
+              Verify your Telegram account below to browse and book games.
             </p>
           </div>
 
@@ -150,13 +150,13 @@ export const TelegramVerifyGate: React.FC<TelegramVerifyGateProps> = ({
                 )}
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-extrabold uppercase tracking-wider text-[#2AABEE]">
-                    Telegram Session Detected
+                    Active Telegram Account
                   </p>
                   <p className="text-sm font-extrabold text-white truncate">
                     {getTelegramDisplayFullName(detectedWebAppAccount)}
                   </p>
                   <p className="text-xs text-slate-400 font-mono truncate">
-                    {formatTelegramBadge(detectedWebAppAccount)}
+                    {formatTelegramBadge(detectedWebAppAccount)} • ID #{detectedWebAppAccount.id}
                   </p>
                 </div>
               </div>
@@ -166,7 +166,7 @@ export const TelegramVerifyGate: React.FC<TelegramVerifyGateProps> = ({
                 onClick={() => onVerified(detectedWebAppAccount)}
                 className="w-full py-4 rounded-2xl bg-[#00E676] hover:bg-[#00c965] text-black font-extrabold text-xs uppercase tracking-wider shadow-xl shadow-[#00E676]/25 transition cursor-pointer"
               >
-                ✓ Verify & Start Booking ({formatTelegramBadge(detectedWebAppAccount)})
+                ✓ Continue as {formatTelegramBadge(detectedWebAppAccount)}
               </button>
             </div>
           ) : activeBotUsername ? (
@@ -184,8 +184,8 @@ export const TelegramVerifyGate: React.FC<TelegramVerifyGateProps> = ({
                 </a>
                 <p className="text-[11px] text-slate-400 text-center">
                   Tap <strong className="text-slate-200">&ldquo;⚽ Book Match&rdquo;</strong> inside{' '}
-                  <span className="font-mono text-[#2AABEE]">@{activeBotUsername}</span> for instant
-                  automatic verification.
+                  <span className="font-mono text-[#2AABEE]">@{activeBotUsername}</span> on your own
+                  Telegram app for instant automatic verification.
                 </p>
               </div>
 
@@ -198,10 +198,12 @@ export const TelegramVerifyGate: React.FC<TelegramVerifyGateProps> = ({
               </div>
 
               {/* Official Telegram Login Widget */}
-              <div className="p-4 rounded-2xl bg-[#080D1A] border border-[#1E2D4A] flex flex-col items-center justify-center space-y-2.5 min-h-[76px]">
+              <div className="p-4 rounded-2xl bg-[#080D1A] border border-[#1E2D4A] flex flex-col items-center justify-center space-y-2.5 min-h-[84px]">
                 <div ref={widgetContainerRef} className="flex items-center justify-center" />
-                <p className="text-[10px] text-slate-500 text-center">
-                  Official Telegram Login • Confirms via message from Telegram
+                <p className="text-[10px] text-slate-400 text-center leading-relaxed">
+                  Logging in with a different Telegram account on this browser? Click{' '}
+                  <strong className="text-slate-200">&ldquo;Not you?&rdquo;</strong> under the
+                  button to switch accounts.
                 </p>
               </div>
             </div>
