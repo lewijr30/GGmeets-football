@@ -1,123 +1,123 @@
 /**
- * Phase 0 Security Rules Verification Suite — Dirty Dozen Adversarial Payloads
- * Verifies that all 12 unauthorized writes, replay attacks, PII enumeration, and overbooking payloads
- * return PERMISSION_DENIED under firestore.rules.
+ * Firestore Security Rules — Dirty Dozen Adversarial Verification Suite
+ * Validates all 12 attack vectors defined in security_spec.md return PERMISSION_DENIED.
  */
 
-export interface AdversarialCase {
+export interface DirtyDozenCase {
   id: number;
   name: string;
-  auth: null;
   operation: 'get' | 'list' | 'create' | 'update' | 'delete';
   path: string;
+  auth: { uid: string; email?: string; email_verified?: boolean } | null;
   payload?: Record<string, unknown>;
   expected: 'PERMISSION_DENIED';
 }
 
-export const DIRTY_DOZEN_TESTS: AdversarialCase[] = [
+export const DIRTY_DOZEN_TESTS: DirtyDozenCase[] = [
   {
     id: 1,
-    name: 'Direct Match Creation Without Server AdminOp Proof',
-    auth: null,
+    name: 'Shadow Field Injection on Match',
     operation: 'create',
-    path: '/matches/m-fake',
-    payload: { id: 'm-fake', title: 'Fake Match', lastAdminOpId: 'op-missing' },
+    path: '/matches/m-shadow-1',
+    auth: { uid: 'u1', email: 'lewijunior80@gmail.com', email_verified: true },
+    payload: { id: 'm-shadow-1', title: 'Bole', isFeatured: true },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 2,
-    name: 'Direct BookingPass Creation Without Server Proof',
-    auth: null,
+    name: 'Unverified Admin Email Spoof',
     operation: 'create',
-    path: '/booking_passes/pass-1234567890abcdef1234',
-    payload: { id: 'pass-1234567890abcdef1234', status: 'approved', lastAdminOpId: 'op-missing' },
+    path: '/matches/m-spoof-1',
+    auth: { uid: 'attacker', email: 'lewijunior80@gmail.com', email_verified: false },
+    payload: { id: 'm-spoof-1', title: 'Spoofed Match' },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 3,
-    name: 'Shadow Field Injection on Match',
+    name: 'Admin Vault Enumeration',
+    operation: 'list',
+    path: '/admin_vault',
     auth: null,
-    operation: 'create',
-    path: '/matches/m-shadow',
-    payload: { id: 'm-shadow', ghostAdminFlag: true },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 4,
-    name: 'Reading AdminOp Documents to Extract Secret Key',
+    name: 'Admin Keys Enumeration',
+    operation: 'list',
+    path: '/admin_keys',
     auth: null,
-    operation: 'get',
-    path: '/admin_ops/op-12345678',
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 5,
-    name: 'Enumerating Admin Keys or Booking Passes via List Query',
+    name: 'Orphaned Spot Increment Without Paired Booking',
+    operation: 'update',
+    path: '/matches/1793349149880',
     auth: null,
-    operation: 'list',
-    path: '/admin_keys',
+    payload: { pending_spots: 1, lastBookingId: 'b-nonexistent' },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 6,
-    name: 'Overbooking Past Match Total Spots Limit',
-    auth: null,
+    name: 'Spot Capacity Overflow',
     operation: 'update',
-    path: '/matches/m-full-10-of-10',
-    payload: { pending_spots: 3, total_spots: 10, verified_spots: 8 },
+    path: '/matches/1793349149880',
+    auth: null,
+    payload: { total_spots: 22, verified_spots: 22, pending_spots: 1 },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 7,
-    name: 'Replaying Previously Committed AdminOp Nonce',
+    name: 'Self-Approved Player Booking Creation',
+    operation: 'create',
+    path: '/booking_channels/ch-0123456789abcdef0123456789abcdef/bookings/b-1',
     auth: null,
-    operation: 'update',
-    path: '/matches/m-1',
-    payload: { total_spots: 20, lastAdminOpId: 'op-already-exists' },
+    payload: { id: 'b-1', status: 'approved' },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 8,
-    name: 'Registering Rogue AdminKey After Bootstrap Lock Exists',
+    name: 'Unauthorized Player Status Escalation Update',
+    operation: 'update',
+    path: '/booking_channels/ch-0123456789abcdef0123456789abcdef/bookings/b-1',
     auth: null,
-    operation: 'create',
-    path: '/admin_keys/adm-000000000000000000000000000000000000000000000000',
-    payload: { id: 'adm-000000000000000000000000000000000000000000000000' },
+    payload: { status: 'approved', lastAdminOpId: 'op-forged-123' },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 9,
-    name: 'Path ID & String Size Poisoning',
-    auth: null,
+    name: 'ID Poisoning on BookingPass',
     operation: 'create',
-    path: '/matches/bad$id!',
-    payload: { id: 'bad$id!', title: 'x'.repeat(5000) },
+    path: '/booking_passes/bad$id!',
+    auth: null,
+    payload: { id: 'bad$id!', status: 'pending' },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 10,
-    name: 'Client Timestamp Forgery',
-    auth: null,
-    operation: 'create',
-    path: '/admin_ops/op-forged-time',
-    payload: { id: 'op-forged-time', createdAt: '2020-01-01T00:00:00Z' },
+    name: 'Value Poisoning on Match Update',
+    operation: 'update',
+    path: '/matches/1793349149880',
+    auth: { uid: 'u1', email: 'lewijunior80@gmail.com', email_verified: true },
+    payload: { price: 'free-string-poison' },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 11,
-    name: 'Direct Pass Status Tampering to Approved',
+    name: 'Timestamp Forgery on Booking Creation',
+    operation: 'create',
+    path: '/booking_channels/ch-0123456789abcdef0123456789abcdef/bookings/b-2',
     auth: null,
-    operation: 'update',
-    path: '/booking_passes/pass-1234567890abcdef1234',
-    payload: { status: 'approved', lastAdminOpId: 'op-invalid' },
+    payload: { id: 'b-2', createdAt: '2020-01-01T00:00:00Z' },
     expected: 'PERMISSION_DENIED',
   },
   {
     id: 12,
-    name: 'Reading Archived Match Document',
+    name: 'Master Gate Revocation Bypass on Inactive Channel',
+    operation: 'create',
+    path: '/booking_channels/ch-deadbeefdeadbeefdeadbeefdeadbeef/bookings/b-3',
     auth: null,
-    operation: 'get',
-    path: '/matches/m-archived',
+    payload: { id: 'b-3', channelId: 'ch-deadbeefdeadbeefdeadbeefdeadbeef', status: 'pending' },
     expected: 'PERMISSION_DENIED',
   },
 ];

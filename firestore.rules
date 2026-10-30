@@ -17,6 +17,10 @@ service cloud.firestore {
       return id is string && id.size() == 52 && id.matches('^adm-[a-f0-9]{48}$');
     }
 
+    function isValidChannelId(id) {
+      return id is string && id.size() == 35 && id.matches('^ch-[a-f0-9]{32}$');
+    }
+
     function isValidOpId(id) {
       return id is string && id.size() >= 6 && id.size() <= 128 && id.matches('^op-[a-zA-Z0-9_\\-]+$');
     }
@@ -33,12 +37,36 @@ service cloud.firestore {
       return resource.data;
     }
 
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Bootstrapped Admin fallback strictly requiring email_verified == true
+    function isBootstrappedAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        request.auth.token.email == 'lewijunior80@gmail.com';
+    }
+
     // Verifies that the current atomic batch creates a brand-new /admin_ops/{opId}
-    // proving possession of a registered 192-bit server AdminKey without exposing it.
+    // proving possession of a registered 192-bit AdminKey without exposing it.
     function isAuthorizedByAdminOp(opId) {
       return isValidOpId(opId) &&
         !exists(/databases/$(database)/documents/admin_ops/$(opId)) &&
         existsAfter(/databases/$(database)/documents/admin_ops/$(opId));
+    }
+
+    function isAuthorizedAdminWrite(opId) {
+      return isBootstrappedAdmin() || isAuthorizedByAdminOp(opId);
+    }
+
+    // Relational helper verifying a player's atomic spot claim is paired with a brand-new EncryptedBooking
+    function isPairedPlayerBookingClaim(matchId, bookingId, channelId) {
+      return isValidChannelId(channelId) &&
+        !exists(/databases/$(database)/documents/booking_channels/$(channelId)/bookings/$(bookingId)) &&
+        existsAfter(/databases/$(database)/documents/booking_channels/$(channelId)/bookings/$(bookingId)) &&
+        getAfter(/databases/$(database)/documents/booking_channels/$(channelId)/bookings/$(bookingId)).data.event_id == matchId &&
+        getAfter(/databases/$(database)/documents/booking_channels/$(channelId)/bookings/$(bookingId)).data.status == 'pending';
     }
 
     // Schema Validation Blueprint: AdminLock
@@ -50,6 +78,30 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
+    // Schema Validation Blueprint: PublicChannel
+    function isValidPublicChannel(data) {
+      return data.keys().hasAll(['id', 'channelId', 'publicKeySpki', 'lastAdminOpId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'channelId', 'publicKeySpki', 'lastAdminOpId', 'createdAt', 'updatedAt']) &&
+        data.id is string && data.id.size() <= 32 && data.id == 'public_channel' &&
+        isValidChannelId(data.channelId) &&
+        data.publicKeySpki is string && data.publicKeySpki.size() >= 200 && data.publicKeySpki.size() <= 2000 &&
+        isValidOpId(data.lastAdminOpId) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Schema Validation Blueprint: BookingChannel (Master Gate Parent)
+    function isValidBookingChannel(data) {
+      return data.keys().hasAll(['id', 'active', 'publicKeySpki', 'lastAdminOpId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'active', 'publicKeySpki', 'lastAdminOpId', 'createdAt', 'updatedAt']) &&
+        isValidChannelId(data.id) &&
+        data.active is bool &&
+        data.publicKeySpki is string && data.publicKeySpki.size() >= 200 && data.publicKeySpki.size() <= 2000 &&
+        isValidOpId(data.lastAdminOpId) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     // Schema Validation Blueprint: AdminKey
     function isValidAdminKeyDoc(data) {
       return data.keys().hasAll(['id', 'createdAt']) &&
@@ -57,6 +109,18 @@ service cloud.firestore {
         isValidAdminKey(data.id) &&
         (!('lastAdminOpId' in data) || isValidOpId(data.lastAdminOpId)) &&
         data.createdAt is timestamp;
+    }
+
+    // Schema Validation Blueprint: AdminVault
+    function isValidAdminVault(data) {
+      return data.keys().hasAll(['id', 'channelId', 'privateKeyPkcs8', 'lastAdminOpId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'channelId', 'privateKeyPkcs8', 'lastAdminOpId', 'createdAt', 'updatedAt']) &&
+        isValidAdminKey(data.id) &&
+        isValidChannelId(data.channelId) &&
+        data.privateKeyPkcs8 is string && data.privateKeyPkcs8.size() >= 800 && data.privateKeyPkcs8.size() <= 4000 &&
+        isValidOpId(data.lastAdminOpId) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
     }
 
     // Schema Validation Blueprint: AdminOp
@@ -135,7 +199,79 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // Schema Validation Blueprint: Booking (Isolated inside 192-bit Server-Secret Admin Inbox)
+    // Schema Validation Blueprint: EncryptedBooking (Zero Plaintext PII)
+    function isValidEncryptedBooking(data) {
+      return data.keys().hasAll([
+          'id',
+          'channelId',
+          'passId',
+          'event_id',
+          'match_title',
+          'match_date',
+          'match_time',
+          'match_location',
+          'amount',
+          'payment_method',
+          'status',
+          'wrappedKey',
+          'ivName',
+          'encName',
+          'ivPhone',
+          'encPhone',
+          'ivReceipt',
+          'encReceipt',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'channelId',
+          'passId',
+          'event_id',
+          'match_title',
+          'match_date',
+          'match_time',
+          'match_location',
+          'amount',
+          'payment_method',
+          'status',
+          'wrappedKey',
+          'ivName',
+          'encName',
+          'ivPhone',
+          'encPhone',
+          'ivReceipt',
+          'encReceipt',
+          'lastAdminOpId',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidChannelId(data.channelId) &&
+        isValidPassId(data.passId) &&
+        isValidId(data.event_id) &&
+        data.match_title is string && data.match_title.size() >= 1 && data.match_title.size() <= 120 &&
+        data.match_date is string && data.match_date.size() >= 1 && data.match_date.size() <= 60 &&
+        data.match_time is string && data.match_time.size() >= 1 && data.match_time.size() <= 60 &&
+        data.match_location is string && data.match_location.size() >= 1 && data.match_location.size() <= 160 &&
+        data.amount is number && data.amount >= 0 && data.amount <= 100000 &&
+        data.payment_method is string && data.payment_method.size() <= 20 &&
+        data.payment_method in ['Telebirr', 'CBE'] &&
+        data.status is string && data.status.size() <= 20 &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        data.wrappedKey is string && data.wrappedKey.size() >= 100 && data.wrappedKey.size() <= 1024 &&
+        data.ivName is string && data.ivName.size() >= 12 && data.ivName.size() <= 32 &&
+        data.encName is string && data.encName.size() >= 16 && data.encName.size() <= 512 &&
+        data.ivPhone is string && data.ivPhone.size() >= 12 && data.ivPhone.size() <= 32 &&
+        data.encPhone is string && data.encPhone.size() >= 16 && data.encPhone.size() <= 256 &&
+        data.ivReceipt is string && data.ivReceipt.size() >= 12 && data.ivReceipt.size() <= 32 &&
+        data.encReceipt is string && data.encReceipt.size() >= 20 && data.encReceipt.size() <= 750000 &&
+        (!('lastAdminOpId' in data) || isValidOpId(data.lastAdminOpId)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Schema Validation Blueprint: Legacy Booking (Isolated inside 192-bit Server-Secret Admin Inbox)
     function isValidBooking(data) {
       return data.keys().hasAll([
           'id',
@@ -209,13 +345,13 @@ service cloud.firestore {
           'amount',
           'payment_method',
           'status',
-          'lastAdminOpId',
           'createdAt',
           'updatedAt'
         ]) &&
         data.keys().hasOnly([
           'id',
           'bookingId',
+          'channelId',
           'event_id',
           'match_title',
           'match_date',
@@ -230,6 +366,7 @@ service cloud.firestore {
         ]) &&
         isValidPassId(data.id) &&
         isValidId(data.bookingId) &&
+        (!('channelId' in data) || isValidChannelId(data.channelId)) &&
         isValidId(data.event_id) &&
         data.match_title is string && data.match_title.size() >= 1 && data.match_title.size() <= 120 &&
         data.match_date is string && data.match_date.size() >= 1 && data.match_date.size() <= 60 &&
@@ -240,21 +377,131 @@ service cloud.firestore {
         data.payment_method in ['Telebirr', 'CBE'] &&
         data.status is string && data.status.size() <= 20 &&
         data.status in ['pending', 'approved', 'rejected'] &&
-        isValidOpId(data.lastAdminOpId) &&
+        (!('lastAdminOpId' in data) || isValidOpId(data.lastAdminOpId)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
 
-    // Unreadable One-Time Bootstrap Lock
+    // Singleton One-Time Bootstrap Lock (Non-Secret Setup Indicator; List Forbidden)
     match /config/{configId} {
-      allow get, list: if false;
+      allow get: if configId == 'admin_lock';
+      allow list: if false;
       allow create: if configId == 'admin_lock' &&
         isValidAdminLock(incoming()) &&
         incoming().createdAt == request.time;
       allow update, delete: if false;
     }
 
-    // Server-Derived 192-bit Admin Capability Keys (List Forbidden)
+    // Singleton Public RSA-OAEP-2048 Encryption Channel Descriptor (List Forbidden)
+    match /booking_config/{channelConfigId} {
+      allow get: if channelConfigId == 'public_channel';
+      allow list: if false;
+
+      allow create: if channelConfigId == 'public_channel' &&
+        isValidPublicChannel(incoming()) &&
+        incoming().id == 'public_channel' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAuthorizedAdminWrite(incoming().lastAdminOpId);
+
+      allow update: if isValidPublicChannel(incoming()) &&
+        channelConfigId == 'public_channel' &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'channelId',
+          'publicKeySpki',
+          'lastAdminOpId',
+          'updatedAt'
+        ]) &&
+        isAuthorizedAdminWrite(incoming().lastAdminOpId);
+
+      allow delete: if false;
+    }
+
+    // Master Gate Parent Documents for Encrypted Booking Channels
+    match /booking_channels/{channelId} {
+      allow get: if isValidChannelId(channelId);
+      allow list: if false;
+
+      allow create: if isValidChannelId(channelId) &&
+        isValidBookingChannel(incoming()) &&
+        incoming().id == channelId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAuthorizedAdminWrite(incoming().lastAdminOpId);
+
+      allow update: if isValidBookingChannel(incoming()) &&
+        isValidChannelId(channelId) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'active',
+          'publicKeySpki',
+          'lastAdminOpId',
+          'updatedAt'
+        ]) &&
+        isAuthorizedAdminWrite(incoming().lastAdminOpId);
+
+      allow delete: if false;
+
+      // Subcollection: Asymmetrically Encrypted Player Bookings (Zero Plaintext PII)
+      match /bookings/{bookingId} {
+        allow get: if isValidChannelId(channelId) &&
+          isValidId(bookingId) &&
+          existing().channelId == channelId &&
+          exists(/databases/$(database)/documents/booking_channels/$(channelId)) &&
+          get(/databases/$(database)/documents/booking_channels/$(channelId)).data.active == true;
+
+        allow list: if isValidChannelId(channelId) &&
+          existing().channelId == channelId;
+
+        allow create: if isValidChannelId(channelId) &&
+          isValidId(bookingId) &&
+          isValidEncryptedBooking(incoming()) &&
+          incoming().id == bookingId &&
+          incoming().channelId == channelId &&
+          incoming().status == 'pending' &&
+          !('lastAdminOpId' in incoming()) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/booking_channels/$(channelId)) &&
+          get(/databases/$(database)/documents/booking_channels/$(channelId)).data.active == true &&
+          exists(/databases/$(database)/documents/matches/$(incoming().event_id)) &&
+          get(/databases/$(database)/documents/matches/$(incoming().event_id)).data.visibility == 'live' &&
+          !exists(/databases/$(database)/documents/booking_passes/$(incoming().passId)) &&
+          existsAfter(/databases/$(database)/documents/booking_passes/$(incoming().passId)) &&
+          getAfter(/databases/$(database)/documents/booking_passes/$(incoming().passId)).data.bookingId == bookingId &&
+          getAfter(/databases/$(database)/documents/matches/$(incoming().event_id)).data.lastBookingId == bookingId &&
+          getAfter(/databases/$(database)/documents/matches/$(incoming().event_id)).data.pending_spots ==
+            get(/databases/$(database)/documents/matches/$(incoming().event_id)).data.pending_spots + 1;
+
+        allow update: if isValidEncryptedBooking(incoming()) &&
+          isValidChannelId(channelId) &&
+          isValidId(bookingId) &&
+          incoming().id == existing().id &&
+          incoming().channelId == existing().channelId &&
+          incoming().passId == existing().passId &&
+          incoming().event_id == existing().event_id &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/booking_channels/$(channelId)) &&
+          get(/databases/$(database)/documents/booking_channels/$(channelId)).data.active == true && (
+            // Action: Host Admin approves or rejects payment status
+            (
+              'lastAdminOpId' in incoming() &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'lastAdminOpId', 'updatedAt']) &&
+              isAuthorizedAdminWrite(incoming().lastAdminOpId)
+            )
+          );
+
+        allow delete: if false;
+      }
+    }
+
+    // 192-bit HMAC Admin Capability Keys (List Forbidden)
     match /admin_keys/{keyId} {
       allow get: if isValidAdminKey(keyId);
       allow list: if false;
@@ -264,9 +511,37 @@ service cloud.firestore {
         incoming().createdAt == request.time && (
           (!exists(/databases/$(database)/documents/config/admin_lock) &&
             existsAfter(/databases/$(database)/documents/config/admin_lock)) ||
-          ('lastAdminOpId' in incoming() && isAuthorizedByAdminOp(incoming().lastAdminOpId))
+          ('lastAdminOpId' in incoming() && isAuthorizedAdminWrite(incoming().lastAdminOpId))
         );
       allow update, delete: if false;
+    }
+
+    // Private Capability-Isolated Admin Decryption Key Vault (List Forbidden)
+    match /admin_vault/{keyId} {
+      allow get: if isValidAdminKey(keyId);
+      allow list: if false;
+
+      allow create: if isValidAdminKey(keyId) &&
+        isValidAdminVault(incoming()) &&
+        incoming().id == keyId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAuthorizedAdminWrite(incoming().lastAdminOpId);
+
+      allow update: if isValidAdminVault(incoming()) &&
+        isValidAdminKey(keyId) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'channelId',
+          'privateKeyPkcs8',
+          'lastAdminOpId',
+          'updatedAt'
+        ]) &&
+        isAuthorizedAdminWrite(incoming().lastAdminOpId);
+
+      allow delete: if false;
     }
 
     // Unreadable One-Time Atomic Write Proofs
@@ -290,41 +565,63 @@ service cloud.firestore {
         incoming().id == matchId &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        isAuthorizedByAdminOp(incoming().lastAdminOpId);
+        isAuthorizedAdminWrite(incoming().lastAdminOpId);
 
       allow update: if isValidMatch(incoming()) &&
         isValidId(matchId) &&
         incoming().id == existing().id &&
         incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'title',
-          'event_type',
-          'date',
-          'time',
-          'location',
-          'price',
-          'total_spots',
-          'verified_spots',
-          'pending_spots',
-          'image_url',
-          'description',
-          'amenities',
-          'visibility',
-          'lastBookingId',
-          'lastAdminOpId',
-          'updatedAt'
-        ]) &&
-        isAuthorizedByAdminOp(incoming().lastAdminOpId);
+        incoming().updatedAt == request.time && (
+          // Action 1: Host Admin match management (spot sync, limit edit, archive)
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title',
+              'event_type',
+              'date',
+              'time',
+              'location',
+              'price',
+              'total_spots',
+              'verified_spots',
+              'pending_spots',
+              'image_url',
+              'description',
+              'amenities',
+              'visibility',
+              'lastBookingId',
+              'lastAdminOpId',
+              'updatedAt'
+            ]) &&
+            isAuthorizedAdminWrite(incoming().lastAdminOpId)
+          ) ||
+          // Action 2: Player atomic spot reservation paired with EncryptedBooking creation
+          (
+            existing().visibility == 'live' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'pending_spots',
+              'lastBookingId',
+              'updatedAt'
+            ]) &&
+            incoming().pending_spots == existing().pending_spots + 1 &&
+            (incoming().verified_spots + incoming().pending_spots) <= incoming().total_spots &&
+            exists(/databases/$(database)/documents/booking_config/public_channel) &&
+            isPairedPlayerBookingClaim(
+              matchId,
+              incoming().lastBookingId,
+              get(/databases/$(database)/documents/booking_config/public_channel).data.channelId
+            )
+          )
+        );
 
       allow delete: if false;
     }
 
-    // Private Admin Inbox Bookings Collection (PII Isolated Under 192-bit Server Secret)
+    // Legacy Private Admin Inbox Bookings Collection (PII Isolated Under 192-bit Server Secret)
     match /admin_inboxes/{inboxKey}/bookings/{bookingId} {
       allow get: if isValidAdminKey(inboxKey) &&
         isValidId(bookingId) &&
-        existing().inboxKey == inboxKey;
+        existing().inboxKey == inboxKey &&
+        exists(/databases/$(database)/documents/admin_keys/$(inboxKey));
 
       allow list: if isValidAdminKey(inboxKey) &&
         existing().inboxKey == inboxKey;
@@ -337,7 +634,8 @@ service cloud.firestore {
         incoming().status == 'pending' &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        isAuthorizedByAdminOp(incoming().lastAdminOpId);
+        exists(/databases/$(database)/documents/admin_keys/$(inboxKey)) &&
+        isAuthorizedAdminWrite(incoming().lastAdminOpId);
 
       allow update: if isValidBooking(incoming()) &&
         isValidAdminKey(inboxKey) &&
@@ -348,8 +646,9 @@ service cloud.firestore {
         incoming().event_id == existing().event_id &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/admin_keys/$(inboxKey)) &&
         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'lastAdminOpId', 'updatedAt']) &&
-        isAuthorizedByAdminOp(incoming().lastAdminOpId);
+        isAuthorizedAdminWrite(incoming().lastAdminOpId);
 
       allow delete: if false;
     }
@@ -364,18 +663,37 @@ service cloud.firestore {
         incoming().id == passId &&
         incoming().status == 'pending' &&
         incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time &&
-        isAuthorizedByAdminOp(incoming().lastAdminOpId);
+        incoming().updatedAt == request.time && (
+          // Action 1: Serverless player creation paired atomically with EncryptedBooking
+          (
+            'channelId' in incoming() &&
+            !('lastAdminOpId' in incoming()) &&
+            !exists(/databases/$(database)/documents/booking_channels/$(incoming().channelId)/bookings/$(incoming().bookingId)) &&
+            existsAfter(/databases/$(database)/documents/booking_channels/$(incoming().channelId)/bookings/$(incoming().bookingId)) &&
+            getAfter(/databases/$(database)/documents/booking_channels/$(incoming().channelId)/bookings/$(incoming().bookingId)).data.passId == passId
+          ) ||
+          // Action 2: AdminOp-authorized pass creation
+          (
+            'lastAdminOpId' in incoming() &&
+            isAuthorizedAdminWrite(incoming().lastAdminOpId)
+          )
+        );
 
       allow update: if isValidBookingPass(incoming()) &&
         isValidPassId(passId) &&
         incoming().id == existing().id &&
         incoming().bookingId == existing().bookingId &&
+        (!('channelId' in existing()) || incoming().channelId == existing().channelId) &&
         incoming().event_id == existing().event_id &&
         incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'lastAdminOpId', 'updatedAt']) &&
-        isAuthorizedByAdminOp(incoming().lastAdminOpId);
+        incoming().updatedAt == request.time && (
+          // Action: Host Admin approves or rejects pass status
+          (
+            'lastAdminOpId' in incoming() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'lastAdminOpId', 'updatedAt']) &&
+            isAuthorizedAdminWrite(incoming().lastAdminOpId)
+          )
+        );
 
       allow delete: if false;
     }

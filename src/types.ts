@@ -38,6 +38,7 @@ export interface MatchEvent {
 
 export interface Booking {
   id: string;
+  channelId?: string;
   passId?: string;
   event_id: string;
   match_title: string;

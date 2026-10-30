@@ -2,7 +2,7 @@
   "entities": {
     "AdminLock": {
       "title": "AdminLock",
-      "description": "One-time bootstrap lock preventing unauthorized admin key registration after initial setup.",
+      "description": "One-time bootstrap lock indicating whether the Host Admin password has been configured.",
       "type": "object",
       "properties": {
         "id": {
@@ -23,9 +23,95 @@
       },
       "required": ["id", "locked", "createdAt"]
     },
+    "PublicChannel": {
+      "title": "PublicChannel",
+      "description": "Publicly readable asymmetric RSA-OAEP-2048 encryption channel configuration for zero-login client receipt submissions.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Singleton channel config identifier ('public_channel').",
+          "enum": ["public_channel"],
+          "maxLength": 32
+        },
+        "channelId": {
+          "type": "string",
+          "description": "Active booking channel collection identifier.",
+          "minLength": 35,
+          "maxLength": 35,
+          "pattern": "^ch-[a-f0-9]{32}$"
+        },
+        "publicKeySpki": {
+          "type": "string",
+          "description": "Base64-encoded SPKI RSA-OAEP-2048 public key used by clients to encrypt player PII and payment screenshots.",
+          "minLength": 200,
+          "maxLength": 2000
+        },
+        "lastAdminOpId": {
+          "type": "string",
+          "description": "ID of atomic AdminOp authorizing this channel configuration.",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update."
+        }
+      },
+      "required": ["id", "channelId", "publicKeySpki", "lastAdminOpId", "createdAt", "updatedAt"]
+    },
+    "BookingChannel": {
+      "title": "BookingChannel",
+      "description": "Master Gate parent document governing an encrypted booking channel subcollection.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique 128-bit channel identifier prefixed with ch-.",
+          "minLength": 35,
+          "maxLength": 35,
+          "pattern": "^ch-[a-f0-9]{32}$"
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether this channel currently accepts and serves bookings."
+        },
+        "publicKeySpki": {
+          "type": "string",
+          "description": "Base64-encoded SPKI RSA-OAEP-2048 public key bound to this channel.",
+          "minLength": 200,
+          "maxLength": 2000
+        },
+        "lastAdminOpId": {
+          "type": "string",
+          "description": "ID of atomic AdminOp authorizing this channel.",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update."
+        }
+      },
+      "required": ["id", "active", "publicKeySpki", "lastAdminOpId", "createdAt", "updatedAt"]
+    },
     "AdminKey": {
       "title": "AdminKey",
-      "description": "Server-derived 192-bit HMAC admin capability key record.",
+      "description": "192-bit HMAC-SHA256 admin capability key record derived from the Host Admin password.",
       "type": "object",
       "properties": {
         "id": {
@@ -50,9 +136,54 @@
       },
       "required": ["id", "createdAt"]
     },
+    "AdminVault": {
+      "title": "AdminVault",
+      "description": "Private capability-isolated vault storing the Host Admin RSA-OAEP-2048 private key (list forbidden).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "192-bit admin capability key matching document ID.",
+          "minLength": 52,
+          "maxLength": 52,
+          "pattern": "^adm-[a-f0-9]{48}$"
+        },
+        "channelId": {
+          "type": "string",
+          "description": "Active booking channel identifier paired with this private key.",
+          "minLength": 35,
+          "maxLength": 35,
+          "pattern": "^ch-[a-f0-9]{32}$"
+        },
+        "privateKeyPkcs8": {
+          "type": "string",
+          "description": "Base64-encoded PKCS8 RSA-OAEP-2048 private key accessible only with the 192-bit admin key.",
+          "minLength": 800,
+          "maxLength": 4000
+        },
+        "lastAdminOpId": {
+          "type": "string",
+          "description": "ID of atomic AdminOp authorizing this vault record.",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update."
+        }
+      },
+      "required": ["id", "channelId", "privateKeyPkcs8", "lastAdminOpId", "createdAt", "updatedAt"]
+    },
     "AdminOp": {
       "title": "AdminOp",
-      "description": "Unreadable one-time atomic write proof verifying possession of the server AdminKey.",
+      "description": "Unreadable one-time atomic write proof verifying possession of a registered AdminKey.",
       "type": "object",
       "properties": {
         "id": {
@@ -64,14 +195,14 @@
         },
         "adminKey": {
           "type": "string",
-          "description": "Secret server-derived capability key verified against /admin_keys.",
+          "description": "Secret 192-bit capability key verified against /admin_keys.",
           "minLength": 52,
           "maxLength": 52,
           "pattern": "^adm-[a-f0-9]{48}$"
         },
         "action": {
           "type": "string",
-          "description": "Audited server/admin mutation type.",
+          "description": "Audited admin mutation type.",
           "minLength": 1,
           "maxLength": 40
         },
@@ -85,7 +216,7 @@
     },
     "Match": {
       "title": "Match",
-      "description": "Publicly visible pickup football match in Addis Ababa with live spot capacity tracking.",
+      "description": "Publicly visible pickup football match in Addis Ababa with live atomic spot capacity tracking.",
       "type": "object",
       "properties": {
         "id": {
@@ -172,7 +303,7 @@
         },
         "lastAdminOpId": {
           "type": "string",
-          "description": "ID of atomic AdminOp authorizing the latest write.",
+          "description": "ID of atomic AdminOp authorizing the latest admin write.",
           "minLength": 6,
           "maxLength": 128,
           "pattern": "^op-[a-zA-Z0-9_\\-]+$"
@@ -209,9 +340,9 @@
         "updatedAt"
       ]
     },
-    "Booking": {
-      "title": "Booking",
-      "description": "Admin-isolated player spot registration and Telebirr/CBE payment receipt record containing player PII.",
+    "EncryptedBooking": {
+      "title": "EncryptedBooking",
+      "description": "Zero-plaintext-PII player booking record where player name, phone, and receipt screenshot are asymmetrically encrypted with the Host Admin RSA-OAEP-2048 public key.",
       "type": "object",
       "properties": {
         "id": {
@@ -221,12 +352,12 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "inboxKey": {
+        "channelId": {
           "type": "string",
-          "description": "Parent admin capability inbox key for strict query enforcement.",
-          "minLength": 52,
-          "maxLength": 52,
-          "pattern": "^adm-[a-f0-9]{48}$"
+          "description": "Parent BookingChannel ID for strict query enforcement.",
+          "minLength": 35,
+          "maxLength": 35,
+          "pattern": "^ch-[a-f0-9]{32}$"
         },
         "passId": {
           "type": "string",
@@ -266,18 +397,6 @@
           "minLength": 1,
           "maxLength": 160
         },
-        "player_name": {
-          "type": "string",
-          "description": "Full name of the registered player.",
-          "minLength": 1,
-          "maxLength": 80
-        },
-        "player_phone": {
-          "type": "string",
-          "description": "Player phone number (PII isolated inside secret admin inbox).",
-          "minLength": 3,
-          "maxLength": 30
-        },
         "amount": {
           "type": "number",
           "description": "Payment amount in ETB."
@@ -294,15 +413,51 @@
           "enum": ["pending", "approved", "rejected"],
           "maxLength": 20
         },
-        "screenshot_url": {
+        "wrappedKey": {
           "type": "string",
-          "description": "Compressed transfer receipt screenshot.",
-          "minLength": 10,
-          "maxLength": 700000
+          "description": "RSA-OAEP-2048 encrypted 256-bit AES-GCM content key (base64).",
+          "minLength": 100,
+          "maxLength": 1024
+        },
+        "ivName": {
+          "type": "string",
+          "description": "Base64 12-byte AES-GCM IV for encrypted player name.",
+          "minLength": 12,
+          "maxLength": 32
+        },
+        "encName": {
+          "type": "string",
+          "description": "Base64 AES-GCM ciphertext of player name.",
+          "minLength": 16,
+          "maxLength": 512
+        },
+        "ivPhone": {
+          "type": "string",
+          "description": "Base64 12-byte AES-GCM IV for encrypted player phone.",
+          "minLength": 12,
+          "maxLength": 32
+        },
+        "encPhone": {
+          "type": "string",
+          "description": "Base64 AES-GCM ciphertext of player phone.",
+          "minLength": 16,
+          "maxLength": 256
+        },
+        "ivReceipt": {
+          "type": "string",
+          "description": "Base64 12-byte AES-GCM IV for encrypted receipt JPEG bytes.",
+          "minLength": 12,
+          "maxLength": 32
+        },
+        "encReceipt": {
+          "type": "string",
+          "description": "Base64 AES-GCM ciphertext of compressed JPEG receipt screenshot.",
+          "minLength": 20,
+          "maxLength": 750000
         },
         "lastAdminOpId": {
           "type": "string",
-          "description": "ID of atomic AdminOp authorizing the write.",
+          "description": "Optional ID of atomic AdminOp when Host Admin approves or rejects.",
           "minLength": 6,
           "maxLength": 128,
           "pattern": "^op-[a-zA-Z0-9_\\-]+$"
@@ -316,6 +471,121 @@
           "type": "string",
           "format": "date-time",
           "description": "Server timestamp of latest status review."
+        }
+      },
+      "required": [
+        "id",
+        "channelId",
+        "passId",
+        "event_id",
+        "match_title",
+        "match_date",
+        "match_time",
+        "match_location",
+        "amount",
+        "payment_method",
+        "status",
+        "wrappedKey",
+        "ivName",
+        "encName",
+        "ivPhone",
+        "encPhone",
+        "ivReceipt",
+        "encReceipt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Legacy server-inbox booking receipt isolated under 192-bit AdminKey.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "inboxKey": {
+          "type": "string",
+          "minLength": 52,
+          "maxLength": 52,
+          "pattern": "^adm-[a-f0-9]{48}$"
+        },
+        "passId": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 128,
+          "pattern": "^pass-[a-zA-Z0-9_\\-]+$"
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "match_title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "match_date": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "match_time": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "match_location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "player_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "player_phone": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 30
+        },
+        "amount": {
+          "type": "number"
+        },
+        "payment_method": {
+          "type": "string",
+          "enum": ["Telebirr", "CBE"],
+          "maxLength": 20
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"],
+          "maxLength": 20
+        },
+        "screenshot_url": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 700000
+        },
+        "lastAdminOpId": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
         }
       },
       "required": [
@@ -352,10 +622,17 @@
         },
         "bookingId": {
           "type": "string",
-          "description": "Paired Booking document ID.",
+          "description": "Paired EncryptedBooking document ID.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "channelId": {
+          "type": "string",
+          "description": "Optional parent BookingChannel ID for serverless bookings.",
+          "minLength": 35,
+          "maxLength": 35,
+          "pattern": "^ch-[a-f0-9]{32}$"
         },
         "event_id": {
           "type": "string",
@@ -406,7 +683,7 @@
         },
         "lastAdminOpId": {
           "type": "string",
-          "description": "ID of atomic AdminOp authorizing the write.",
+          "description": "Optional ID of atomic AdminOp when Host Admin updates status.",
           "minLength": 6,
           "maxLength": 128,
           "pattern": "^op-[a-zA-Z0-9_\\-]+$"
@@ -433,7 +710,6 @@
         "amount",
         "payment_method",
         "status",
-        "lastAdminOpId",
         "createdAt",
         "updatedAt"
       ]
@@ -442,23 +718,39 @@
   "firestore": {
     "/config/{configId}": {
       "schema": { "$ref": "#/entities/AdminLock" },
-      "description": "Unreadable one-time bootstrap lock document."
+      "description": "Singleton bootstrap lock document indicating admin password setup state (list forbidden)."
+    },
+    "/booking_config/{channelConfigId}": {
+      "schema": { "$ref": "#/entities/PublicChannel" },
+      "description": "Singleton public RSA-OAEP-2048 encryption channel descriptor (list forbidden)."
+    },
+    "/booking_channels/{channelId}": {
+      "schema": { "$ref": "#/entities/BookingChannel" },
+      "description": "Master Gate parent documents for encrypted booking channels (list forbidden)."
+    },
+    "/booking_channels/{channelId}/bookings/{bookingId}": {
+      "schema": { "$ref": "#/entities/EncryptedBooking" },
+      "description": "Asymmetrically encrypted player booking receipts governed by parent BookingChannel Master Gate."
     },
     "/admin_keys/{keyId}": {
       "schema": { "$ref": "#/entities/AdminKey" },
-      "description": "Server-derived 192-bit capability keys (list forbidden)."
+      "description": "192-bit HMAC capability keys derived from Host Admin password (list forbidden)."
+    },
+    "/admin_vault/{keyId}": {
+      "schema": { "$ref": "#/entities/AdminVault" },
+      "description": "Capability-isolated Host Admin private decryption key vault (list forbidden)."
     },
     "/admin_ops/{opId}": {
       "schema": { "$ref": "#/entities/AdminOp" },
-      "description": "Unreadable one-time atomic write proofs verifying server AdminKey possession."
+      "description": "Unreadable one-time atomic write proofs verifying AdminKey possession."
     },
     "/matches/{matchId}": {
       "schema": { "$ref": "#/entities/Match" },
-      "description": "Public live pickup football matches managed by server-verified AdminOp proofs."
+      "description": "Public live pickup football matches with atomic player spot claims and AdminOp management."
     },
     "/admin_inboxes/{inboxKey}/bookings/{bookingId}": {
       "schema": { "$ref": "#/entities/Booking" },
-      "description": "Private player booking receipts isolated inside the 192-bit server-secret admin inbox."
+      "description": "Legacy server-inbox booking receipts isolated under 192-bit AdminKey."
     },
     "/booking_passes/{passId}": {
       "schema": { "$ref": "#/entities/BookingPass" },

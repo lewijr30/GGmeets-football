@@ -134,43 +134,97 @@ function getAdminInboxKey(): string | null {
 
 let registeredInboxKeyCache: string | null = null;
 
+async function ensureEncryptionChannelRegistered(inboxKey: string) {
+  const vaultRef = doc(serverDb, 'admin_vault', inboxKey);
+  const pubRef = doc(serverDb, 'booking_config', 'public_channel');
+
+  const [vaultSnap, pubSnap] = await Promise.all([getDoc(vaultRef), getDoc(pubRef)]);
+  if (vaultSnap.exists() && pubSnap.exists()) {
+    return;
+  }
+
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'der' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'der' },
+  });
+
+  const publicKeySpki = (publicKey as Buffer).toString('base64');
+  const privateKeyPkcs8 = (privateKey as Buffer).toString('base64');
+  const channelId = `ch-${crypto.randomBytes(16).toString('hex')}`;
+  const opId = makeOpId();
+
+  const chBatch = writeBatch(serverDb);
+  chBatch.set(doc(serverDb, 'admin_ops', opId), {
+    id: opId,
+    adminKey: inboxKey,
+    action: 'init_channel',
+    createdAt: serverTimestamp(),
+  });
+  chBatch.set(doc(serverDb, 'booking_channels', channelId), {
+    id: channelId,
+    active: true,
+    publicKeySpki,
+    lastAdminOpId: opId,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  chBatch.set(pubRef, {
+    id: 'public_channel',
+    channelId,
+    publicKeySpki,
+    lastAdminOpId: opId,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  chBatch.set(vaultRef, {
+    id: inboxKey,
+    channelId,
+    privateKeyPkcs8,
+    lastAdminOpId: opId,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  await chBatch.commit();
+}
+
 async function ensureAdminKeyRegistered(inboxKey: string, previousKey?: string | null) {
   if (registeredInboxKeyCache === inboxKey) return;
 
   const keyRef = doc(serverDb, 'admin_keys', inboxKey);
   const existingSnap = await getDoc(keyRef);
-  if (existingSnap.exists()) {
-    registeredInboxKeyCache = inboxKey;
-    return;
+  if (!existingSnap.exists()) {
+    const batch = writeBatch(serverDb);
+    if (previousKey && previousKey !== inboxKey) {
+      const opId = makeOpId();
+      batch.set(doc(serverDb, 'admin_ops', opId), {
+        id: opId,
+        adminKey: previousKey,
+        action: 'rotate_key',
+        createdAt: serverTimestamp(),
+      });
+      batch.set(keyRef, {
+        id: inboxKey,
+        lastAdminOpId: opId,
+        createdAt: serverTimestamp(),
+      });
+    } else {
+      batch.set(doc(serverDb, 'config', 'admin_lock'), {
+        id: 'admin_lock',
+        locked: true,
+        createdAt: serverTimestamp(),
+      });
+      batch.set(keyRef, {
+        id: inboxKey,
+        createdAt: serverTimestamp(),
+      });
+    }
+
+    await batch.commit();
   }
 
-  const batch = writeBatch(serverDb);
-  if (previousKey && previousKey !== inboxKey) {
-    const opId = makeOpId();
-    batch.set(doc(serverDb, 'admin_ops', opId), {
-      id: opId,
-      adminKey: previousKey,
-      action: 'rotate_key',
-      createdAt: serverTimestamp(),
-    });
-    batch.set(keyRef, {
-      id: inboxKey,
-      lastAdminOpId: opId,
-      createdAt: serverTimestamp(),
-    });
-  } else {
-    batch.set(doc(serverDb, 'config', 'admin_lock'), {
-      id: 'admin_lock',
-      locked: true,
-      createdAt: serverTimestamp(),
-    });
-    batch.set(keyRef, {
-      id: inboxKey,
-      createdAt: serverTimestamp(),
-    });
-  }
-
-  await batch.commit();
+  await ensureEncryptionChannelRegistered(inboxKey);
   registeredInboxKeyCache = inboxKey;
 }
 
