@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { PAYMENT_INFO } from '../constants/data';
 import { Booking, MatchEvent, PaymentMethod } from '../types';
 import { getMatchCapacity } from '../utils/capacity';
@@ -14,9 +14,20 @@ interface BookingModalProps {
   paymentMethod: PaymentMethod;
   setPaymentMethod: (method: PaymentMethod) => void;
   receiptFilePreview: string | null;
+  isProcessingReceipt: boolean;
+  bookingError: string | null;
+  onClearError: () => void;
   onFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onPreviewReceipt: (url: string) => void;
   onCopyText: (text: string, label: string) => void;
-  onSubmit: (e: React.FormEvent) => void;
+  onSubmit: (
+    e: React.FormEvent,
+    refs: {
+      nameInput: HTMLInputElement | null;
+      phoneInput: HTMLInputElement | null;
+      receiptSection: HTMLDivElement | null;
+    }
+  ) => void;
   isSubmitting: boolean;
   onClose: () => void;
 }
@@ -31,7 +42,11 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   paymentMethod,
   setPaymentMethod,
   receiptFilePreview,
+  isProcessingReceipt,
+  bookingError,
+  onClearError,
   onFileUpload,
+  onPreviewReceipt,
   onCopyText,
   onSubmit,
   isSubmitting,
@@ -39,6 +54,10 @@ export const BookingModal: React.FC<BookingModalProps> = ({
 }) => {
   const paymentMethods: PaymentMethod[] = ['Telebirr', 'CBE'];
   const capacity = getMatchCapacity(event, bookings);
+
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const phoneInputRef = useRef<HTMLInputElement | null>(null);
+  const receiptSectionRef = useRef<HTMLDivElement | null>(null);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
@@ -52,6 +71,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             </p>
           </div>
           <button
+            type="button"
             onClick={onClose}
             className="text-slate-400 hover:text-white font-bold text-xl leading-none p-1 cursor-pointer"
           >
@@ -80,7 +100,17 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             </button>
           </div>
         ) : (
-          <form onSubmit={onSubmit} className="space-y-4">
+          <form
+            noValidate
+            onSubmit={(e) =>
+              onSubmit(e, {
+                nameInput: nameInputRef.current,
+                phoneInput: phoneInputRef.current,
+                receiptSection: receiptSectionRef.current,
+              })
+            }
+            className="space-y-4"
+          >
             <div className="bg-[#080D1A] p-4 rounded-2xl flex justify-between items-center border border-[#1E2D4A]">
               <span className="text-xs text-slate-300 font-semibold">Amount to Pay:</span>
               <span className="text-[#00E676] font-black text-lg">{event.price} ETB</span>
@@ -89,29 +119,34 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
-                  Your Full Name
+                  Your Full Name *
                 </label>
                 <input
+                  ref={nameInputRef}
                   type="text"
-                  required
                   maxLength={80}
                   value={playerName}
-                  onChange={(e) => setPlayerName(e.target.value)}
+                  onChange={(e) => {
+                    setPlayerName(e.target.value);
+                    onClearError();
+                  }}
                   placeholder="e.g. Yared Tadesse"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
                 />
               </div>
               <div>
                 <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">
-                  Phone Number
+                  Phone Number *
                 </label>
                 <input
+                  ref={phoneInputRef}
                   type="tel"
-                  required
-                  minLength={3}
                   maxLength={30}
                   value={playerPhone}
-                  onChange={(e) => setPlayerPhone(e.target.value)}
+                  onChange={(e) => {
+                    setPlayerPhone(e.target.value);
+                    onClearError();
+                  }}
                   placeholder="e.g. 0911 23 45 67"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[#080D1A] border border-[#1E2D4A] text-white text-xs focus:border-[#00E676] focus:outline-none"
                 />
@@ -165,42 +200,91 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               </div>
             </div>
 
-            <div className="space-y-2">
+            <div ref={receiptSectionRef} className="space-y-2">
               <label className="text-xs font-bold uppercase text-slate-400 block">
-                Upload Transfer Screenshot (Required)
+                Upload Payment Screenshot *
               </label>
-              <label className="border-2 border-dashed border-[#1E2D4A] hover:border-[#00E676] rounded-2xl p-5 flex flex-col items-center justify-center cursor-pointer transition bg-[#080D1A]">
-                {receiptFilePreview ? (
-                  <div className="flex items-center gap-3">
+
+              {receiptFilePreview ? (
+                <div className="rounded-2xl border-2 border-[#00E676]/70 bg-[#080D1A] p-3 space-y-3">
+                  <div
+                    onClick={() => onPreviewReceipt(receiptFilePreview)}
+                    className="relative h-44 w-full rounded-xl overflow-hidden bg-black/70 border border-[#1E2D4A] cursor-pointer group"
+                  >
                     <img
                       src={receiptFilePreview}
-                      alt="Receipt Preview"
-                      className="w-14 h-14 object-cover rounded-xl border border-[#00E676]"
+                      alt="Uploaded Payment Screenshot"
+                      className="w-full h-full object-contain"
                     />
-                    <div className="text-left">
-                      <p className="text-xs text-[#00E676] font-bold">Screenshot Attached ✓</p>
-                      <p className="text-[10px] text-slate-400">Click to change</p>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <span className="text-3xl mb-1">📤</span>
-                    <span className="text-xs font-bold text-slate-200">
-                      Tap to select receipt photo
+                    <span className="absolute bottom-2 right-2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[10px] font-bold border border-white/15">
+                      🔍 Tap to Zoom
                     </span>
-                    <span className="text-[10px] text-slate-500">JPG or PNG screenshot</span>
-                  </>
-                )}
-                <input type="file" accept="image/*" onChange={onFileUpload} className="hidden" />
-              </label>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold text-[#00E676]">
+                      ✓ Payment Screenshot Ready to Send
+                    </span>
+                    <label className="px-3 py-1.5 rounded-xl bg-[#111A2E] hover:bg-[#16233B] text-slate-200 text-[11px] font-bold border border-[#1E2D4A] cursor-pointer transition">
+                      Replace Photo
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={onFileUpload}
+                        className="sr-only"
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                <label className="border-2 border-dashed border-[#1E2D4A] hover:border-[#00E676] rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer transition bg-[#080D1A] text-center">
+                  {isProcessingReceipt ? (
+                    <>
+                      <span className="text-2xl mb-1 animate-spin">⏳</span>
+                      <span className="text-xs font-extrabold text-[#00E676]">
+                        Preparing your payment screenshot...
+                      </span>
+                      <span className="text-[10px] text-slate-400 mt-0.5">
+                        Optimizing photo for fast upload
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-3xl mb-1">📤</span>
+                      <span className="text-xs font-bold text-slate-200">
+                        Tap here to upload Telebirr / CBE screenshot
+                      </span>
+                      <span className="text-[10px] text-slate-500 mt-0.5">
+                        JPG, PNG, or WebP receipt screenshot
+                      </span>
+                    </>
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={onFileUpload}
+                    className="sr-only"
+                  />
+                </label>
+              )}
             </div>
+
+            {bookingError && (
+              <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/40 text-red-300 text-xs font-bold flex items-start gap-2.5">
+                <span className="shrink-0">⚠️</span>
+                <span>{bookingError}</span>
+              </div>
+            )}
 
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || isProcessingReceipt}
               className="w-full py-4 rounded-2xl bg-[#00E676] text-black font-extrabold text-xs uppercase hover:bg-[#00c965] shadow-xl shadow-[#00E676]/25 transition cursor-pointer disabled:opacity-60"
             >
-              {isSubmitting ? 'Submitting to Host...' : 'Send Receipt & Confirm Spot'}
+              {isProcessingReceipt
+                ? 'Preparing Screenshot...'
+                : isSubmitting
+                  ? 'Sending Receipt to Host...'
+                  : 'Send Receipt & Confirm Spot'}
             </button>
           </form>
         )}
@@ -230,6 +314,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
         <div className="relative h-56">
           <img src={event.image_url} alt={event.title} className="w-full h-full object-cover" />
           <button
+            type="button"
             onClick={onClose}
             className="absolute top-3 right-3 w-8 h-8 rounded-full bg-black/70 text-white flex items-center justify-center font-bold cursor-pointer hover:bg-black"
           >
@@ -272,6 +357,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
               <span className="text-2xl font-black text-white">{event.price} ETB</span>
             </div>
             <button
+              type="button"
               onClick={() => {
                 if (!capacity.isFull) onJoinGame(event);
               }}
@@ -293,29 +379,84 @@ export const DetailModal: React.FC<DetailModalProps> = ({
 
 interface ReceiptZoomModalProps {
   receiptUrl: string;
+  booking?: Booking | null;
+  onApprove?: (booking: Booking) => void;
+  onReject?: (booking: Booking) => void;
   onClose: () => void;
 }
 
-export const ReceiptZoomModal: React.FC<ReceiptZoomModalProps> = ({ receiptUrl, onClose }) => {
+export const ReceiptZoomModal: React.FC<ReceiptZoomModalProps> = ({
+  receiptUrl,
+  booking,
+  onApprove,
+  onReject,
+  onClose,
+}) => {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-md">
-      <div className="relative max-w-lg w-full bg-[#0E1526] p-4 rounded-3xl border border-[#1A263D] space-y-3">
-        <div className="flex justify-between items-center pb-2 border-b border-[#1A263D]">
-          <h4 className="font-extrabold text-white text-sm">Payment Receipt Verification</h4>
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md">
+      <div className="relative max-w-2xl w-full bg-[#0E1526] p-5 rounded-3xl border border-[#1A263D] space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
+        <div className="flex justify-between items-start gap-3 pb-3 border-b border-[#1A263D]">
+          <div>
+            <h4 className="font-extrabold text-white text-base">
+              Payment Screenshot Verification
+            </h4>
+            {booking ? (
+              <p className="text-xs text-slate-300 mt-0.5">
+                <strong className="text-white">{booking.player_name}</strong> • 📞{' '}
+                <span className="font-mono">{booking.player_phone}</span> •{' '}
+                <span className="text-[#00E676] font-extrabold">{booking.amount} ETB</span> via{' '}
+                {booking.payment_method}
+              </p>
+            ) : (
+              <p className="text-xs text-slate-400 mt-0.5">Attached payment transfer receipt</p>
+            )}
+          </div>
           <button
+            type="button"
             onClick={onClose}
-            className="text-slate-400 hover:text-white font-bold text-lg cursor-pointer"
+            className="w-8 h-8 rounded-full bg-[#111A2E] text-slate-300 hover:text-white font-bold text-base flex items-center justify-center cursor-pointer border border-[#1E2D4A]"
           >
             ✕
           </button>
         </div>
-        <div className="max-h-[75vh] overflow-auto rounded-2xl bg-black/50 p-2">
+
+        <div className="rounded-2xl bg-black/80 border border-[#1E2D4A] p-2 flex items-center justify-center">
           <img
             src={receiptUrl}
-            alt="Receipt Full Zoom"
-            className="w-full object-contain rounded-xl"
+            alt="Payment Receipt Full Screenshot"
+            className="max-h-[65vh] w-full object-contain rounded-xl"
           />
         </div>
+
+        {booking && booking.status === 'pending' && onApprove && onReject && (
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 border-t border-[#1A263D]">
+            <span className="text-xs text-amber-300 font-bold">
+              ⏳ Match: {booking.match_title}
+            </span>
+            <div className="flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  onApprove(booking);
+                  onClose();
+                }}
+                className="flex-1 sm:flex-initial px-5 py-2.5 rounded-xl bg-[#00E676] hover:bg-[#00c965] text-black font-extrabold text-xs cursor-pointer transition"
+              >
+                Approve Spot ✓
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onReject(booking);
+                  onClose();
+                }}
+                className="flex-1 sm:flex-initial px-4 py-2.5 rounded-xl bg-red-500/20 hover:bg-red-500/30 text-red-400 font-bold text-xs border border-red-500/30 cursor-pointer transition"
+              >
+                Reject ✕
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -341,12 +482,14 @@ export const DeleteMatchModal: React.FC<DeleteMatchModalProps> = ({
         </p>
         <div className="flex justify-end gap-2 pt-2">
           <button
+            type="button"
             onClick={onCancel}
             className="px-4 py-2 rounded-xl bg-[#111A2E] text-slate-300 font-bold text-xs border border-[#1E2D4A] hover:bg-[#16233B] cursor-pointer"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={onConfirm}
             className="px-4 py-2 rounded-xl bg-red-500 text-white font-extrabold text-xs hover:bg-red-600 cursor-pointer"
           >

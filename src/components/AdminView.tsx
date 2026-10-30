@@ -16,7 +16,7 @@ interface AdminViewProps {
   onCreateMatch: (match: MatchEvent) => Promise<void>;
   onUpdateMatchLimit: (eventId: string, newLimit: number) => Promise<void>;
   onRequestDeleteMatch: (match: MatchEvent) => void;
-  onViewReceipt: (url: string) => void;
+  onInspectReceipt: (booking: Booking) => void;
   onFileUpload: (
     e: React.ChangeEvent<HTMLInputElement>,
     callback: (dataUrl: string) => void
@@ -53,7 +53,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   onCreateMatch,
   onUpdateMatchLimit,
   onRequestDeleteMatch,
-  onViewReceipt,
+  onInspectReceipt,
   onFileUpload,
 }) => {
   const [title, setTitle] = useState('');
@@ -108,10 +108,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </span>
             <div>
               <p className="text-sm font-extrabold text-amber-300">
-                {pendingCount} Payment{pendingCount === 1 ? '' : 's'} Pending Verification
+                {pendingCount} Payment Screenshot{pendingCount === 1 ? '' : 's'} Pending Verification
               </p>
               <p className="text-xs text-slate-300">
-                Players have uploaded Telebirr/CBE transfer receipts waiting for your review.
+                Tap any receipt screenshot below to inspect the transfer and approve the player's spot.
               </p>
             </div>
           </div>
@@ -134,12 +134,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
         <div>
           <h2 className="text-3xl font-extrabold text-white">Host Admin Panel 🛡️</h2>
           <p className="text-slate-400 text-sm">
-            Verify payments, post matches with pitch photos, and control booking limits.
+            Inspect payment screenshots, verify player spots, and post matches.
           </p>
         </div>
 
         <div className="flex bg-[#111A2E] p-1.5 rounded-2xl border border-[#1E2D4A]">
           <button
+            type="button"
             onClick={() => setAdminTab('approvals')}
             className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer transition ${
               adminTab === 'approvals' ? 'bg-[#00E676] text-black' : 'text-slate-400 hover:text-white'
@@ -153,6 +154,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
             )}
           </button>
           <button
+            type="button"
             onClick={() => setAdminTab('create')}
             className={`px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition ${
               adminTab === 'create' ? 'bg-[#00E676] text-black' : 'text-slate-400 hover:text-white'
@@ -161,6 +163,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
             + Post Match
           </button>
           <button
+            type="button"
             onClick={() => setAdminTab('games')}
             className={`px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition ${
               adminTab === 'games' ? 'bg-[#00E676] text-black' : 'text-slate-400 hover:text-white'
@@ -176,6 +179,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
           <div className="flex gap-2 pb-2">
             {FILTER_STATUSES.map((status) => (
               <button
+                type="button"
                 key={status}
                 onClick={() => setApprovalFilter(status)}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold capitalize cursor-pointer transition ${
@@ -191,71 +195,98 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
           {filteredAdminBookings.length === 0 ? (
             <div className="bg-[#0E1526] border border-[#1A263D] rounded-2xl p-8 text-center text-slate-400 text-xs">
-              No payment submissions in this filter.
+              No payment submissions in this filter yet. When a player sends a Telebirr or CBE receipt screenshot, it will appear here immediately.
             </div>
           ) : (
             filteredAdminBookings.map((booking) => (
               <div
                 key={booking.id}
-                className={`bg-[#0E1526] border rounded-2xl p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 transition ${
+                className={`bg-[#0E1526] border rounded-2xl p-5 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-5 transition ${
                   booking.status === 'pending'
-                    ? 'border-amber-400/40 shadow-lg shadow-amber-400/5'
+                    ? 'border-amber-400/50 shadow-lg shadow-amber-400/5'
                     : 'border-[#1A263D]'
                 }`}
               >
-                <div className="space-y-1">
+                <div className="space-y-2 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <h4 className="font-extrabold text-white text-base">{booking.player_name}</h4>
+                    <h4 className="font-extrabold text-white text-lg">{booking.player_name}</h4>
                     <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase ${
                         booking.status === 'approved'
-                          ? 'bg-[#00E676]/20 text-[#00E676]'
+                          ? 'bg-[#00E676]/20 text-[#00E676] border border-[#00E676]/30'
                           : booking.status === 'rejected'
-                            ? 'bg-red-500/20 text-red-400'
-                            : 'bg-amber-400/20 text-amber-300'
+                            ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                            : 'bg-amber-400/20 text-amber-300 border border-amber-400/30'
                       }`}
                     >
                       {booking.status}
                     </span>
                     <span className="text-[11px] text-slate-500">• {booking.submitted_at}</span>
                   </div>
-                  <p className="text-xs text-slate-400 font-mono">📞 {booking.player_phone}</p>
+
+                  <p className="text-xs text-slate-300 font-mono">📞 {booking.player_phone}</p>
+
                   <p className="text-xs text-slate-300">
-                    Match: <strong>{booking.match_title}</strong> •{' '}
-                    <span className="text-[#00E676] font-bold">{booking.amount} ETB</span> via{' '}
-                    {booking.payment_method}
+                    Match: <strong className="text-white">{booking.match_title}</strong>
+                    {booking.match_date ? ` (${booking.match_date})` : ''} •{' '}
+                    <span className="text-[#00E676] font-extrabold">{booking.amount} ETB</span> via{' '}
+                    <span className="font-bold text-white">{booking.payment_method}</span>
                   </p>
                 </div>
 
-                <div className="flex items-center gap-4">
-                  <img
-                    onClick={() => onViewReceipt(booking.screenshot_url)}
-                    src={booking.screenshot_url}
-                    alt="Transfer Receipt"
-                    className="w-14 h-14 object-cover rounded-xl border border-[#1E2D4A] cursor-pointer hover:border-[#00E676]"
-                  />
-                  {booking.status === 'pending' ? (
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() =>
-                          onUpdatePaymentStatus(booking.id, booking.event_id, 'approved')
-                        }
-                        className="px-4 py-2 bg-[#00E676] hover:bg-[#00c965] text-black font-extrabold text-xs rounded-xl cursor-pointer transition"
-                      >
-                        Approve ✓
-                      </button>
-                      <button
-                        onClick={() =>
-                          onUpdatePaymentStatus(booking.id, booking.event_id, 'rejected')
-                        }
-                        className="px-3 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 font-bold text-xs rounded-xl border border-red-500/30 cursor-pointer transition"
-                      >
-                        Reject ✕
-                      </button>
-                    </div>
-                  ) : (
-                    <span className="text-xs text-slate-400">Done ({booking.status})</span>
-                  )}
+                {/* Clear Payment Screenshot Preview + Actions */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => onInspectReceipt(booking)}
+                    className="group relative w-full sm:w-44 h-32 rounded-2xl overflow-hidden border-2 border-[#1E2D4A] hover:border-[#00E676] bg-[#080D1A] cursor-pointer transition shrink-0 text-left"
+                  >
+                    <img
+                      src={booking.screenshot_url}
+                      alt={`${booking.player_name} Payment Screenshot`}
+                      className="w-full h-full object-contain bg-black/60"
+                    />
+                    <span className="absolute inset-x-0 bottom-0 bg-black/80 text-[#00E676] text-[10px] font-extrabold px-2.5 py-1.5 text-center group-hover:bg-[#00E676] group-hover:text-black transition">
+                      🔍 View Full Screenshot
+                    </span>
+                  </button>
+
+                  <div className="flex flex-wrap sm:flex-col gap-2 justify-end">
+                    <button
+                      type="button"
+                      onClick={() => onInspectReceipt(booking)}
+                      className="px-4 py-2 rounded-xl bg-[#111A2E] hover:bg-[#16233B] text-white font-bold text-xs border border-[#1E2D4A] cursor-pointer transition"
+                    >
+                      🖼️ View Screenshot
+                    </button>
+
+                    {booking.status === 'pending' ? (
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdatePaymentStatus(booking.id, booking.event_id, 'approved')
+                          }
+                          className="px-4 py-2 bg-[#00E676] hover:bg-[#00c965] text-black font-extrabold text-xs rounded-xl cursor-pointer transition"
+                        >
+                          Approve ✓
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onUpdatePaymentStatus(booking.id, booking.event_id, 'rejected')
+                          }
+                          className="px-3.5 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 font-bold text-xs rounded-xl border border-red-500/30 cursor-pointer transition"
+                        >
+                          Reject ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-400 text-center font-semibold">
+                        Status: {booking.status}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             ))
@@ -297,16 +328,18 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <label className="flex-1 border-2 border-dashed border-[#1E2D4A] hover:border-[#00E676] rounded-2xl p-4 flex flex-col items-center justify-center cursor-pointer transition bg-[#090D18] text-center">
                     <span className="text-2xl mb-1">📷</span>
                     <span className="text-xs font-extrabold text-white">
-                      {uploadedImagePreview ? 'Tap to change uploaded photo' : 'Upload Pitch Photo from Device'}
+                      {uploadedImagePreview
+                        ? 'Tap to change uploaded photo'
+                        : 'Upload Pitch Photo from Device'}
                     </span>
                     <span className="text-[11px] text-slate-400 mt-0.5">
-                      JPG, PNG, or WebP (max 6MB)
+                      JPG, PNG, or WebP (max 15MB)
                     </span>
                     <input
                       type="file"
                       accept="image/*"
                       onChange={(e) => onFileUpload(e, setUploadedImagePreview)}
-                      className="hidden"
+                      className="sr-only"
                     />
                   </label>
 
@@ -532,6 +565,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     </div>
 
                     <button
+                      type="button"
                       onClick={() => onRequestDeleteMatch(ev)}
                       className="px-3.5 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-xs font-bold rounded-xl border border-red-500/30 cursor-pointer transition"
                     >

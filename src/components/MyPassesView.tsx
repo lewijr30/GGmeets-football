@@ -22,6 +22,7 @@ export const MyPassesView: React.FC<MyPassesViewProps> = ({
           <p className="text-slate-400 text-sm mt-1">Show your digital pass at the pitch gate.</p>
         </div>
         <button
+          type="button"
           onClick={() => setCurrentView('events')}
           className="px-4 py-2 bg-[#111A2E] hover:bg-[#16233B] text-slate-300 border border-[#1E2D4A] rounded-xl text-xs font-bold cursor-pointer"
         >
@@ -37,6 +38,7 @@ export const MyPassesView: React.FC<MyPassesViewProps> = ({
             You have not registered for any games yet. Browse matches and reserve your spot.
           </p>
           <button
+            type="button"
             onClick={() => setCurrentView('events')}
             className="px-6 py-3 rounded-xl bg-[#00E676] text-black font-extrabold text-xs uppercase cursor-pointer hover:bg-[#00c965]"
           >
@@ -54,9 +56,9 @@ export const MyPassesView: React.FC<MyPassesViewProps> = ({
             return (
               <div
                 key={b.id}
-                className="bg-[#0E1526] border border-[#1A263D] rounded-3xl p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 shadow-xl"
+                className="bg-[#0E1526] border border-[#1A263D] rounded-3xl p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6 shadow-xl"
               >
-                <div className="space-y-2">
+                <div className="space-y-2 flex-1">
                   <span
                     className={`inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase ${
                       b.status === 'approved'
@@ -67,27 +69,39 @@ export const MyPassesView: React.FC<MyPassesViewProps> = ({
                     }`}
                   >
                     {b.status === 'approved'
-                      ? '✓ Verified Pass'
+                      ? '✓ Verified Match Pass'
                       : b.status === 'rejected'
                         ? '✕ Payment Rejected'
-                        : '⏳ Admin Verification Pending'}
+                        : '⏳ Receipt Sent • Pending Host Approval'}
                   </span>
                   <h3 className="text-xl font-extrabold text-white">{b.match_title}</h3>
                   <p className="text-xs text-slate-400">
                     📅 {matchDate} • {matchTime} • 📍 {matchLocation}
                   </p>
                   <p className="text-xs text-slate-300">
-                    Fee: <strong className="text-[#00E676]">{b.amount} ETB</strong> via{' '}
+                    Player: <strong className="text-white">{b.player_name}</strong> • Fee:{' '}
+                    <strong className="text-[#00E676]">{b.amount} ETB</strong> via{' '}
                     {b.payment_method}
                   </p>
                 </div>
 
-                <button
-                  onClick={() => onViewReceipt(b.screenshot_url)}
-                  className="px-4 py-2 bg-[#111A2E] hover:bg-[#16233B] text-slate-300 font-bold text-xs rounded-xl border border-[#1E2D4A] cursor-pointer"
-                >
-                  View Receipt
-                </button>
+                {b.screenshot_url && (
+                  <div className="flex items-center gap-3 self-end sm:self-center">
+                    <img
+                      onClick={() => onViewReceipt(b.screenshot_url)}
+                      src={b.screenshot_url}
+                      alt="Sent Receipt"
+                      className="w-16 h-16 object-cover rounded-xl border border-[#1E2D4A] cursor-pointer hover:border-[#00E676]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => onViewReceipt(b.screenshot_url)}
+                      className="px-4 py-2.5 bg-[#111A2E] hover:bg-[#16233B] text-slate-200 font-bold text-xs rounded-xl border border-[#1E2D4A] cursor-pointer"
+                    >
+                      🖼️ View Receipt
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}

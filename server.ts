@@ -40,6 +40,7 @@ interface StoredAdminAuth {
   salt: string;
   hash: string;
   secret: string;
+  inboxKey?: string;
 }
 
 const runtimeFallbackSecret = crypto.randomBytes(32).toString('hex');
@@ -63,6 +64,15 @@ function makePassId(): string {
   return `pass-${Date.now()}-${crypto.randomBytes(12).toString('hex')}`;
 }
 
+function deriveInboxKeyFromPassword(password: string): string {
+  const hex = crypto
+    .createHmac('sha256', password.trim())
+    .update('ggmeets-telegram-admin-v1')
+    .digest('hex')
+    .slice(0, 48);
+  return `adm-${hex}`;
+}
+
 function readStoredAuth(): StoredAdminAuth | null {
   try {
     if (!fs.existsSync(AUTH_FILE_PATH)) return null;
@@ -73,6 +83,7 @@ function readStoredAuth(): StoredAdminAuth | null {
         salt: parsed.salt,
         hash: parsed.hash,
         secret: parsed.secret,
+        inboxKey: parsed.inboxKey,
       };
     }
     return null;
@@ -86,7 +97,8 @@ function writeStoredAuth(password: string): StoredAdminAuth {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   const secret = existing?.secret || crypto.randomBytes(32).toString('hex');
-  const record: StoredAdminAuth = { salt, hash, secret };
+  const inboxKey = deriveInboxKeyFromPassword(password);
+  const record: StoredAdminAuth = { salt, hash, secret, inboxKey };
   fs.writeFileSync(AUTH_FILE_PATH, JSON.stringify(record, null, 2), { mode: 0o600 });
   return record;
 }
@@ -103,15 +115,13 @@ function isPasswordConfigured(): boolean {
 function getAdminInboxKey(): string | null {
   const envPass = getEnvPassword();
   if (envPass !== null) {
-    const hex = crypto
-      .createHmac('sha256', envPass)
-      .update('ggmeets-telegram-admin-v1')
-      .digest('hex')
-      .slice(0, 48);
-    return `adm-${hex}`;
+    return deriveInboxKeyFromPassword(envPass);
   }
   const stored = readStoredAuth();
   if (stored) {
+    if (stored.inboxKey && /^adm-[a-f0-9]{48}$/.test(stored.inboxKey)) {
+      return stored.inboxKey;
+    }
     const hex = crypto
       .createHmac('sha256', stored.hash)
       .update('ggmeets-telegram-admin-v1')
@@ -792,7 +802,10 @@ async function startServer() {
     res.json({ ok: true, token, inboxKey: nextInboxKey });
   });
 
-  const isProd = process.env.NODE_ENV === 'production';
+  const distPath = path.join(__dirname, 'dist');
+  const hasBuiltDist = fs.existsSync(path.join(distPath, 'index.html'));
+  const isProd =
+    process.env.NODE_ENV === 'production' || (Boolean(process.env.K_SERVICE) && hasBuiltDist);
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
@@ -802,7 +815,6 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));
     app.use((req: Request, res: Response) => {
       if (req.path.startsWith('/api/')) {

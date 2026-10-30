@@ -138,30 +138,34 @@ export function App() {
 
   const [bookingPlayerName, setBookingPlayerName] = useState<string>(() => {
     const saved = loadFromStorage(PROFILE_STORAGE_KEY, DEFAULT_PROFILE);
-    return saved.name;
+    return saved.name || '';
   });
   const [bookingPlayerPhone, setBookingPlayerPhone] = useState<string>(() => {
     const saved = loadFromStorage(PROFILE_STORAGE_KEY, DEFAULT_PROFILE);
-    return saved.phone;
+    return saved.phone || '';
   });
+
+  const [activeCategory, setActiveCategory] = useState<EventCategory>('All');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [bookingModalOpen, setBookingModalOpen] = useState<boolean>(false);
+  const [detailModalEventId, setDetailModalEventId] = useState<string | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Telebirr');
+  const [receiptFilePreview, setReceiptFilePreview] = useState<string | null>(null);
+  const [isProcessingReceipt, setIsProcessingReceipt] = useState<boolean>(false);
+  const [bookingError, setBookingError] = useState<string | null>(null);
+  const [isSubmittingBooking, setIsSubmittingBooking] = useState<boolean>(false);
+
+  const [viewReceiptUrl, setViewReceiptUrl] = useState<string | null>(null);
+  const [inspectedBooking, setInspectedBooking] = useState<Booking | null>(null);
+  const [matchToDelete, setMatchToDelete] = useState<MatchEvent | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const [liveAdminAlerts, setLiveAdminAlerts] = useState<Booking[]>([]);
   const [browserNotifPermission, setBrowserNotifPermission] = useState<string>(() =>
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   );
-
-  const [activeCategory, setActiveCategory] = useState<EventCategory>('All');
-  const [searchQuery, setSearchQuery] = useState('');
-
-  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
-  const [detailModalEventId, setDetailModalEventId] = useState<string | null>(null);
-  const [bookingModalOpen, setBookingModalOpen] = useState(false);
-  const [receiptFilePreview, setReceiptFilePreview] = useState<string | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Telebirr');
-  const [isSubmittingBooking, setIsSubmittingBooking] = useState(false);
-  const [viewReceiptModal, setViewReceiptModal] = useState<string | null>(null);
-  const [matchToDelete, setMatchToDelete] = useState<MatchEvent | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const toastTimerRef = useRef<number | null>(null);
   const knownBookingIdsRef = useRef<Set<string> | null>(null);
@@ -169,17 +173,17 @@ export function App() {
   isAdminUnlockedRef.current = isAdminUnlocked;
 
   const selectedEvent = useMemo(
-    () => (selectedEventId ? events.find((e) => e.id === selectedEventId) || null : null),
+    () => events.find((e) => e.id === selectedEventId) || null,
     [events, selectedEventId]
   );
 
   const detailModalEvent = useMemo(
-    () => (detailModalEventId ? events.find((e) => e.id === detailModalEventId) || null : null),
+    () => events.find((e) => e.id === detailModalEventId) || null,
     [events, detailModalEventId]
   );
 
-  const navigate = useCallback((to: string, replace = false) => {
-    const normalized = normalizePath(to);
+  const navigate = useCallback((nextPath: string, replace = false) => {
+    const normalized = normalizePath(nextPath);
     if (replace) {
       window.history.replaceState({}, '', normalized);
     } else {
@@ -203,7 +207,7 @@ export function App() {
     }
     toastTimerRef.current = window.setTimeout(() => {
       setToastMessage(null);
-    }, 3600);
+    }, 4000);
   }, []);
 
   // Persist player's local passes in localStorage
@@ -329,7 +333,7 @@ export function App() {
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         for (const nb of newlySubmittedPending) {
           try {
-            new Notification('⚽ New Payment Pending — GGmeets', {
+            new Notification('⚽ New Payment Screenshot — GGmeets', {
               body: `${nb.player_name} sent ${nb.amount} ETB (${nb.payment_method}) for ${nb.match_title}`,
             });
           } catch {
@@ -587,55 +591,106 @@ export function App() {
     callback: (dataUrl: string) => void
   ) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
-    if (file.size > 15 * 1024 * 1024) {
-      showToast('⚠️ File size exceeds 15MB. Please choose a smaller photo.');
+    if (file.size > 20 * 1024 * 1024) {
+      showToast('⚠️ File size exceeds 20MB. Please choose a smaller photo.');
       return;
     }
-    compressImageFile(file, 960, 0.72)
-      .then(async (compressedDataUrl) => {
-        if (compressedDataUrl.length > MAX_IMAGE_LENGTH) {
-          const smaller = await compressImageFile(file, 680, 0.58);
-          if (smaller.length > MAX_IMAGE_LENGTH) {
-            showToast('⚠️ Image is still too large. Please select a smaller screenshot.');
-            return;
-          }
-          callback(smaller);
-          return;
-        }
+    compressImageFile(file, MAX_IMAGE_LENGTH - 40000)
+      .then((compressedDataUrl) => {
         callback(compressedDataUrl);
       })
-      .catch(() => {
-        showToast('⚠️ Failed to process selected photo.');
+      .catch((err) => {
+        showToast(`⚠️ ${err instanceof Error ? err.message : 'Failed to process photo.'}`);
       });
   };
 
-  // Player submits Telebirr / CBE transfer screenshot (works inside Telegram Bot WebApp without login!)
-  const handleClientBookingSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedEvent) return;
-    if (!receiptFilePreview) {
-      showToast('⚠️ Please upload your transfer screenshot.');
+  const handleReceiptScreenshotUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setBookingError(null);
+
+    if (file.size > 20 * 1024 * 1024) {
+      setBookingError('Screenshot file exceeds 20MB. Please select a smaller screenshot.');
       return;
     }
 
+    setIsProcessingReceipt(true);
+    compressImageFile(file, MAX_IMAGE_LENGTH - 40000)
+      .then((compressedDataUrl) => {
+        setReceiptFilePreview(compressedDataUrl);
+        setIsProcessingReceipt(false);
+        setBookingError(null);
+        showToast('✓ Payment screenshot attached!');
+      })
+      .catch((err) => {
+        setIsProcessingReceipt(false);
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'Could not read screenshot photo. Please choose a JPG or PNG screenshot.';
+        setBookingError(msg);
+      });
+  };
+
+  const openBookingModalForEvent = (event: MatchEvent) => {
+    setSelectedEventId(event.id);
+    setReceiptFilePreview(null);
+    setIsProcessingReceipt(false);
+    setBookingError(null);
+    setBookingModalOpen(true);
+  };
+
+  // Player submits Telebirr / CBE transfer screenshot
+  const handleClientBookingSubmit = async (
+    e: React.FormEvent,
+    refs: {
+      nameInput: HTMLInputElement | null;
+      phoneInput: HTMLInputElement | null;
+      receiptSection: HTMLDivElement | null;
+    }
+  ) => {
+    e.preventDefault();
+    if (!selectedEvent) return;
+
     const cleanName = bookingPlayerName.trim().slice(0, MAX_PLAYER_NAME_LENGTH);
     const cleanPhone = bookingPlayerPhone.trim().slice(0, MAX_PHONE_LENGTH);
+
     if (!cleanName) {
-      showToast('⚠️ Please enter your full name.');
+      setBookingError('Please enter your full name at the top of this form.');
+      refs.nameInput?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      refs.nameInput?.focus();
       return;
     }
+
     if (cleanPhone.length < 3) {
-      showToast('⚠️ Please enter a valid phone number.');
+      setBookingError('Please enter a valid phone number (e.g. 0911 23 45 67).');
+      refs.phoneInput?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      refs.phoneInput?.focus();
+      return;
+    }
+
+    if (isProcessingReceipt) {
+      setBookingError('Your screenshot is still being prepared. Please wait a moment.');
+      return;
+    }
+
+    if (!receiptFilePreview) {
+      setBookingError('Please upload your Telebirr or CBE payment screenshot before confirming.');
+      refs.receiptSection?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
 
     const currentCap = getMatchCapacity(selectedEvent, bookings);
     if (currentCap.isFull) {
-      showToast('🔒 Booking limit reached! All spots for this match are filled.');
+      setBookingError('Booking limit reached! All spots for this match are filled.');
       return;
     }
 
+    setBookingError(null);
     setIsSubmittingBooking(true);
 
     try {
@@ -651,15 +706,18 @@ export function App() {
         }),
       });
 
-      const data = (await res.json()) as {
-        ok?: boolean;
-        booking?: Booking;
-        error?: string;
-      };
+      let data: { ok?: boolean; booking?: Booking; error?: string } = {};
+      try {
+        data = (await res.json()) as { ok?: boolean; booking?: Booking; error?: string };
+      } catch {
+        data = { error: `Server returned status ${res.status}. Make sure the latest app update is deployed.` };
+      }
 
       if (!res.ok || !data.booking) {
         setIsSubmittingBooking(false);
-        showToast(`⚠️ ${data.error || 'Could not submit booking.'}`);
+        const errMsg = data.error || 'Could not submit booking. Please try again.';
+        setBookingError(errMsg);
+        showToast(`⚠️ ${errMsg}`);
         return;
       }
 
@@ -673,11 +731,14 @@ export function App() {
       setIsSubmittingBooking(false);
       setBookingModalOpen(false);
       setReceiptFilePreview(null);
-      showToast('⚽ Receipt submitted! Host has been notified to verify your spot.');
+      setBookingError(null);
+      showToast('⚽ Payment screenshot sent! Host has been notified to verify your spot.');
       setCurrentView('my-tickets');
     } catch {
       setIsSubmittingBooking(false);
-      showToast('⚠️ Network error while submitting receipt. Please try again.');
+      const netErr = 'Network error while sending receipt. Please check your connection and try again.';
+      setBookingError(netErr);
+      showToast(`⚠️ ${netErr}`);
     }
   };
 
@@ -804,6 +865,16 @@ export function App() {
     return bookings.filter((b) => b.status === approvalFilter);
   }, [bookings, approvalFilter]);
 
+  const openReceiptInspectorForBooking = (booking: Booking) => {
+    setInspectedBooking(booking);
+    setViewReceiptUrl(booking.screenshot_url);
+  };
+
+  const closeReceiptModal = () => {
+    setViewReceiptUrl(null);
+    setInspectedBooking(null);
+  };
+
   // Dedicated password-locked /admin/login & /admin route handling
   if (isAdminRoute) {
     if (isCheckingLock) {
@@ -818,7 +889,7 @@ export function App() {
       return (
         <>
           {toastMessage && (
-            <div className="fixed top-5 right-5 z-50 bg-[#00E676] text-black font-extrabold px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3">
+            <div className="fixed top-5 right-5 z-[100] bg-[#00E676] text-black font-extrabold px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3">
               <span>{toastMessage}</span>
             </div>
           )}
@@ -835,45 +906,54 @@ export function App() {
     return (
       <div className="flex flex-col min-h-screen bg-[#070B13] text-slate-100">
         {toastMessage && (
-          <div className="fixed top-5 right-5 z-50 bg-[#00E676] text-black font-extrabold px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3">
+          <div className="fixed top-5 right-5 z-[100] bg-[#00E676] text-black font-extrabold px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3">
             <span>{toastMessage}</span>
           </div>
         )}
 
-        {/* Real-time Incoming Payment Pending Notification Cards */}
+        {/* Real-time Incoming Payment Pending Notification Cards with Live Screenshot Thumbnail */}
         {liveAdminAlerts.length > 0 && (
-          <div className="fixed bottom-5 right-5 z-50 w-full max-w-md space-y-2.5 px-4 sm:px-0">
+          <div className="fixed bottom-5 right-5 z-[60] w-full max-w-md space-y-2.5 px-4 sm:px-0">
             {liveAdminAlerts.map((alertItem) => (
               <div
                 key={alertItem.id}
                 className="bg-[#0E1526] border-2 border-[#00E676] rounded-2xl p-4 shadow-2xl flex items-start gap-3.5"
               >
                 <img
-                  onClick={() => setViewReceiptModal(alertItem.screenshot_url)}
+                  onClick={() => openReceiptInspectorForBooking(alertItem)}
                   src={alertItem.screenshot_url}
-                  alt="Receipt"
-                  className="w-14 h-14 rounded-xl object-cover border border-[#00E676]/60 shrink-0 cursor-pointer"
+                  alt="Incoming Receipt"
+                  className="w-16 h-16 rounded-xl object-cover border border-[#00E676] shrink-0 cursor-pointer"
                 />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-[#00E676]">
-                      🔔 New Client Payment Pending
-                    </span>
+                    <p className="text-xs font-extrabold uppercase tracking-wider text-[#00E676]">
+                      New Payment Screenshot!
+                    </p>
                     <button
                       type="button"
                       onClick={() =>
-                        setLiveAdminAlerts((prev) => prev.filter((a) => a.id !== alertItem.id))
+                        setLiveAdminAlerts((prev) => prev.filter((x) => x.id !== alertItem.id))
                       }
                       className="text-slate-400 hover:text-white text-xs font-bold cursor-pointer"
                     >
                       ✕
                     </button>
                   </div>
-                  <p className="text-xs font-extrabold text-white truncate mt-0.5">
+                  <p className="text-sm font-extrabold text-white truncate mt-0.5">
                     {alertItem.player_name} • {alertItem.amount} ETB ({alertItem.payment_method})
                   </p>
-                  <p className="text-[11px] text-slate-300 truncate">{alertItem.match_title}</p>
-                  <div className="flex items-center gap-2 mt-2">
+                  <p className="text-[11px] text-slate-400 truncate">
+                    {alertItem.match_title} • 📞 {alertItem.player_phone}
+                  </p>
+                  <div className="flex gap-2 mt-2.5">
+                    <button
+                      type="button"
+                      onClick={() => openReceiptInspectorForBooking(alertItem)}
+                      className="px-3 py-1.5 rounded-lg bg-[#111A2E] text-white border border-[#1E2D4A] font-bold text-[11px] cursor-pointer hover:bg-[#16233B]"
+                    >
+                      🖼️ View Screenshot
+                    </button>
                     <button
                       type="button"
                       onClick={() =>
@@ -882,13 +962,6 @@ export function App() {
                       className="px-3 py-1.5 rounded-lg bg-[#00E676] text-black font-extrabold text-[11px] cursor-pointer hover:bg-[#00c965]"
                     >
                       Approve ✓
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setViewReceiptModal(alertItem.screenshot_url)}
-                      className="px-3 py-1.5 rounded-lg bg-[#111A2E] text-slate-200 border border-[#1E2D4A] font-bold text-[11px] cursor-pointer hover:bg-[#16233B]"
-                    >
-                      View Receipt
                     </button>
                   </div>
                 </div>
@@ -979,14 +1052,17 @@ export function App() {
           onCreateMatch={handleCreateMatch}
           onUpdateMatchLimit={handleUpdateMatchLimit}
           onRequestDeleteMatch={(match) => setMatchToDelete(match)}
-          onViewReceipt={(url) => setViewReceiptModal(url)}
+          onInspectReceipt={openReceiptInspectorForBooking}
           onFileUpload={handleFileUpload}
         />
 
-        {viewReceiptModal && (
+        {viewReceiptUrl && (
           <ReceiptZoomModal
-            receiptUrl={viewReceiptModal}
-            onClose={() => setViewReceiptModal(null)}
+            receiptUrl={viewReceiptUrl}
+            booking={inspectedBooking}
+            onApprove={(b) => handleUpdatePaymentStatus(b.id, b.event_id, 'approved')}
+            onReject={(b) => handleUpdatePaymentStatus(b.id, b.event_id, 'rejected')}
+            onClose={closeReceiptModal}
           />
         )}
 
@@ -1011,7 +1087,7 @@ export function App() {
   return (
     <div className="flex flex-col min-h-screen text-slate-100">
       {toastMessage && (
-        <div className="fixed top-5 right-5 z-50 bg-[#00E676] text-black font-extrabold px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3">
+        <div className="fixed top-5 right-5 z-[100] bg-[#00E676] text-black font-extrabold px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3">
           <span>{toastMessage}</span>
         </div>
       )}
@@ -1029,11 +1105,7 @@ export function App() {
           bookings={bookings}
           setCurrentView={setCurrentView}
           onOpenDetail={(event) => setDetailModalEventId(event.id)}
-          onOpenBooking={(event) => {
-            setSelectedEventId(event.id);
-            setReceiptFilePreview(null);
-            setBookingModalOpen(true);
-          }}
+          onOpenBooking={openBookingModalForEvent}
         />
       )}
 
@@ -1046,11 +1118,7 @@ export function App() {
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
           onOpenDetail={(event) => setDetailModalEventId(event.id)}
-          onOpenBooking={(event) => {
-            setSelectedEventId(event.id);
-            setReceiptFilePreview(null);
-            setBookingModalOpen(true);
-          }}
+          onOpenBooking={openBookingModalForEvent}
         />
       )}
 
@@ -1059,7 +1127,10 @@ export function App() {
           bookings={myLocalPasses}
           events={events}
           setCurrentView={setCurrentView}
-          onViewReceipt={(url) => setViewReceiptModal(url)}
+          onViewReceipt={(url) => {
+            setInspectedBooking(null);
+            setViewReceiptUrl(url);
+          }}
         />
       )}
 
@@ -1082,11 +1153,21 @@ export function App() {
           paymentMethod={paymentMethod}
           setPaymentMethod={setPaymentMethod}
           receiptFilePreview={receiptFilePreview}
-          onFileUpload={(e) => handleFileUpload(e, setReceiptFilePreview)}
+          isProcessingReceipt={isProcessingReceipt}
+          bookingError={bookingError}
+          onClearError={() => setBookingError(null)}
+          onFileUpload={handleReceiptScreenshotUpload}
+          onPreviewReceipt={(url) => {
+            setInspectedBooking(null);
+            setViewReceiptUrl(url);
+          }}
           onCopyText={(text, label) => handleCopyText(text, `${label} account number`)}
           onSubmit={handleClientBookingSubmit}
           isSubmitting={isSubmittingBooking}
-          onClose={() => setBookingModalOpen(false)}
+          onClose={() => {
+            setBookingModalOpen(false);
+            setBookingError(null);
+          }}
         />
       )}
 
@@ -1096,18 +1177,17 @@ export function App() {
           bookings={bookings}
           onClose={() => setDetailModalEventId(null)}
           onJoinGame={(event) => {
-            setSelectedEventId(event.id);
             setDetailModalEventId(null);
-            setReceiptFilePreview(null);
-            setBookingModalOpen(true);
+            openBookingModalForEvent(event);
           }}
         />
       )}
 
-      {viewReceiptModal && (
+      {viewReceiptUrl && (
         <ReceiptZoomModal
-          receiptUrl={viewReceiptModal}
-          onClose={() => setViewReceiptModal(null)}
+          receiptUrl={viewReceiptUrl}
+          booking={null}
+          onClose={closeReceiptModal}
         />
       )}
     </div>
