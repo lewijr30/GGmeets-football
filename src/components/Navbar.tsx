@@ -1,11 +1,13 @@
 import React from 'react';
-import { AppView, UserProfile } from '../types';
+import { formatTelegramBadge } from '../lib/telegramAuth';
+import { AppView, TelegramAccount, UserProfile } from '../types';
 
 interface NavbarProps {
   currentView: AppView;
   setCurrentView: (view: AppView) => void;
   myBookingsCount: number;
   userProfile: UserProfile;
+  telegramAccount: TelegramAccount;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -13,12 +15,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   setCurrentView,
   myBookingsCount,
   userProfile,
+  telegramAccount,
 }) => {
   return (
     <>
       {/* Header */}
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-[#070B13]/90 border-b border-[#162032]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-2">
           <div
             onClick={() => setCurrentView('home')}
             className="flex items-center space-x-3 cursor-pointer group"
@@ -77,16 +80,23 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           <div
             onClick={() => setCurrentView('profile')}
-            className="flex items-center space-x-3 p-1.5 pr-3 rounded-full bg-[#111A2E] border border-[#1E2D4A] hover:border-[#00E676]/50 cursor-pointer transition"
+            className="flex items-center space-x-2.5 p-1.5 pr-3 rounded-xl bg-[#111A2E] border border-[#1E2D4A] hover:border-[#00E676]/50 cursor-pointer transition"
           >
             <img
               src={userProfile.avatar}
               alt="Profile"
-              className="w-8 h-8 rounded-full object-cover border border-[#00E676]/50"
+              className="w-8 h-8 rounded-lg object-cover border border-[#00E676]/50"
             />
-            <span className="text-xs font-bold text-white hidden sm:inline">
-              {userProfile.name.trim() ? userProfile.name.trim().split(' ')[0] : 'Profile'}
-            </span>
+            <div className="flex flex-col text-left leading-tight">
+              <span className="text-xs font-bold text-white hidden sm:inline">
+                {userProfile.name.trim()
+                  ? userProfile.name.trim().split(' ')[0]
+                  : telegramAccount.firstName}
+              </span>
+              <span className="text-[10px] font-mono font-bold text-[#2AABEE]">
+                ✈️ {formatTelegramBadge(telegramAccount)}
+              </span>
+            </div>
           </div>
         </div>
       </header>

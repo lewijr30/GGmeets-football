@@ -29,6 +29,14 @@ service cloud.firestore {
       return id is string && id.size() >= 20 && id.size() <= 128 && id.matches('^pass-[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidBotNumericId(id) {
+      return id is string && id.size() >= 3 && id.size() <= 32 && id.matches('^[0-9]+$');
+    }
+
+    function isValidBotUsername(handle) {
+      return handle is string && handle.size() >= 3 && handle.size() <= 64 && handle.matches('^[a-zA-Z0-9_]+$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -88,6 +96,42 @@ service cloud.firestore {
         isValidOpId(data.lastAdminOpId) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
+    }
+
+    // Schema Validation Blueprint: TelegramBotConfig (Non-Secret Public Bot Descriptor)
+    function isValidTelegramBotConfig(data) {
+      return data.keys().hasAll([
+          'id',
+          'botId',
+          'botUsername',
+          'botName',
+          'enabled',
+          'lastAdminOpId',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'botId',
+          'botUsername',
+          'botName',
+          'enabled',
+          'lastAdminOpId',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.id is string && data.id.size() <= 32 && data.id == 'telegram_bot' &&
+        isValidBotNumericId(data.botId) &&
+        isValidBotUsername(data.botUsername) &&
+        data.botName is string && data.botName.size() >= 1 && data.botName.size() <= 80 &&
+        data.enabled is bool &&
+        isValidOpId(data.lastAdminOpId) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidBookingConfigDoc(data) {
+      return isValidPublicChannel(data) || isValidTelegramBotConfig(data);
     }
 
     // Schema Validation Blueprint: BookingChannel (Master Gate Parent)
@@ -199,7 +243,7 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // Schema Validation Blueprint: EncryptedBooking (Zero Plaintext PII)
+    // Schema Validation Blueprint: EncryptedBooking (Zero Plaintext PII + Encrypted Telegram Identity)
     function isValidEncryptedBooking(data) {
       return data.keys().hasAll([
           'id',
@@ -242,6 +286,8 @@ service cloud.firestore {
           'encPhone',
           'ivReceipt',
           'encReceipt',
+          'ivTg',
+          'encTg',
           'lastAdminOpId',
           'createdAt',
           'updatedAt'
@@ -266,6 +312,9 @@ service cloud.firestore {
         data.encPhone is string && data.encPhone.size() >= 16 && data.encPhone.size() <= 256 &&
         data.ivReceipt is string && data.ivReceipt.size() >= 12 && data.ivReceipt.size() <= 32 &&
         data.encReceipt is string && data.encReceipt.size() >= 20 && data.encReceipt.size() <= 750000 &&
+        (('ivTg' in data) == ('encTg' in data)) &&
+        (!('ivTg' in data) || (data.ivTg is string && data.ivTg.size() >= 12 && data.ivTg.size() <= 32)) &&
+        (!('encTg' in data) || (data.encTg is string && data.encTg.size() >= 16 && data.encTg.size() <= 1024)) &&
         (!('lastAdminOpId' in data) || isValidOpId(data.lastAdminOpId)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
@@ -392,30 +441,58 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Singleton Public RSA-OAEP-2048 Encryption Channel Descriptor (List Forbidden)
+    // Singleton Public Descriptors: RSA-OAEP-2048 Channel & Non-Secret Telegram Bot Config (List Forbidden)
     match /booking_config/{channelConfigId} {
-      allow get: if channelConfigId == 'public_channel';
+      allow get: if channelConfigId == 'public_channel' || channelConfigId == 'telegram_bot';
       allow list: if false;
 
-      allow create: if channelConfigId == 'public_channel' &&
-        isValidPublicChannel(incoming()) &&
-        incoming().id == 'public_channel' &&
+      allow create: if (
+          (
+            channelConfigId == 'public_channel' &&
+            isValidPublicChannel(incoming()) &&
+            incoming().id == 'public_channel'
+          ) ||
+          (
+            channelConfigId == 'telegram_bot' &&
+            isValidTelegramBotConfig(incoming()) &&
+            incoming().id == 'telegram_bot'
+          )
+        ) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         isAuthorizedAdminWrite(incoming().lastAdminOpId);
 
-      allow update: if isValidPublicChannel(incoming()) &&
-        channelConfigId == 'public_channel' &&
+      allow update: if isValidBookingConfigDoc(incoming()) &&
         incoming().id == existing().id &&
         incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'channelId',
-          'publicKeySpki',
-          'lastAdminOpId',
-          'updatedAt'
-        ]) &&
-        isAuthorizedAdminWrite(incoming().lastAdminOpId);
+        incoming().updatedAt == request.time && (
+          // Action 1: Rotate or update RSA-OAEP public channel descriptor
+          (
+            channelConfigId == 'public_channel' &&
+            isValidPublicChannel(incoming()) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'channelId',
+              'publicKeySpki',
+              'lastAdminOpId',
+              'updatedAt'
+            ]) &&
+            isAuthorizedAdminWrite(incoming().lastAdminOpId)
+          ) ||
+          // Action 2: Update Telegram Bot verification configuration
+          (
+            channelConfigId == 'telegram_bot' &&
+            isValidTelegramBotConfig(incoming()) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'botId',
+              'botUsername',
+              'botName',
+              'enabled',
+              'lastAdminOpId',
+              'updatedAt'
+            ]) &&
+            isAuthorizedAdminWrite(incoming().lastAdminOpId)
+          )
+        );
 
       allow delete: if false;
     }
@@ -447,7 +524,7 @@ service cloud.firestore {
 
       allow delete: if false;
 
-      // Subcollection: Asymmetrically Encrypted Player Bookings (Zero Plaintext PII)
+      // Subcollection: Asymmetrically Encrypted Player Bookings (Zero Plaintext PII; Verified Telegram Required)
       match /bookings/{bookingId} {
         allow get: if isValidChannelId(channelId) &&
           isValidId(bookingId) &&
@@ -461,6 +538,8 @@ service cloud.firestore {
         allow create: if isValidChannelId(channelId) &&
           isValidId(bookingId) &&
           isValidEncryptedBooking(incoming()) &&
+          'ivTg' in incoming() &&
+          'encTg' in incoming() &&
           incoming().id == bookingId &&
           incoming().channelId == channelId &&
           incoming().status == 'pending' &&

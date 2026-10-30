@@ -14,6 +14,7 @@ import {
 import { MyPassesView } from './components/MyPassesView';
 import { Navbar } from './components/Navbar';
 import { ProfileView } from './components/ProfileView';
+import { TelegramVerifyGate } from './components/TelegramVerifyGate';
 import { DEFAULT_GAMES, DEFAULT_PROFILE } from './constants/data';
 import {
   MAX_PHONE_LENGTH,
@@ -32,12 +33,22 @@ import {
   checkAdminLockStatusServerless,
   createMatchServerless,
   decryptEncryptedBookingDoc,
+  saveTelegramBotConfigServerless,
   setupAdminPasswordServerless,
   submitPlayerBookingServerless,
   unlockAdminServerless,
   updateBookingStatusServerless,
   updateMatchLimitServerless,
 } from './lib/serverlessStore';
+import {
+  clearVerifiedTelegramAccount,
+  consumeTelegramUrlAuthResult,
+  formatTelegramBadge,
+  getTelegramDisplayFullName,
+  initTelegramMiniApp,
+  loadVerifiedTelegramAccount,
+  saveVerifiedTelegramAccount,
+} from './lib/telegramAuth';
 import {
   AdminTab,
   ApprovalFilter,
@@ -47,6 +58,8 @@ import {
   EventCategory,
   MatchEvent,
   PaymentMethod,
+  TelegramAccount,
+  TelegramBotConfig,
   UserProfile,
 } from './types';
 import { getMatchCapacity } from './utils/capacity';
@@ -99,6 +112,14 @@ function getPublicClientUrl(): string {
   return origin;
 }
 
+function getDevClientUrl(): string {
+  const origin = window.location.origin;
+  if (origin.includes('ais-pre-')) {
+    return origin.replace('ais-pre-', 'ais-dev-');
+  }
+  return origin;
+}
+
 function playNotificationChime() {
   try {
     const AudioCtx =
@@ -140,6 +161,24 @@ export function App() {
   const [changePasswordOpen, setChangePasswordOpen] = useState<boolean>(false);
 
   const isAdminUnlocked = Boolean(adminContext);
+
+  // Telegram Verification State
+  const [detectedWebAppAccount] = useState<TelegramAccount | null>(() => initTelegramMiniApp());
+  const [telegramAccount, setTelegramAccount] = useState<TelegramAccount | null>(() => {
+    const fromHash = consumeTelegramUrlAuthResult();
+    if (fromHash) {
+      saveVerifiedTelegramAccount(fromHash);
+      return fromHash;
+    }
+    const stored = loadVerifiedTelegramAccount();
+    const miniApp = initTelegramMiniApp();
+    if (miniApp && stored && stored.id === miniApp.id) {
+      saveVerifiedTelegramAccount(miniApp);
+      return miniApp;
+    }
+    return stored;
+  });
+  const [telegramBotConfig, setTelegramBotConfig] = useState<TelegramBotConfig | null>(null);
 
   const [events, setEvents] = useState<MatchEvent[]>(DEFAULT_GAMES);
   const [bookings, setBookings] = useState<Booking[]>([]);
@@ -225,6 +264,65 @@ export function App() {
     }, 4000);
   }, []);
 
+  // Sync verified Telegram account profile fields when first verified
+  const handleTelegramVerified = useCallback(
+    (account: TelegramAccount) => {
+      saveVerifiedTelegramAccount(account);
+      setTelegramAccount(account);
+
+      const tgFullName = getTelegramDisplayFullName(account);
+      setUserProfile((prev) => {
+        const nextName = prev.name.trim() ? prev.name : tgFullName;
+        const nextAvatar =
+          account.photoUrl && prev.avatar === DEFAULT_PROFILE.avatar
+            ? account.photoUrl
+            : prev.avatar;
+        return {
+          ...prev,
+          name: nextName,
+          avatar: nextAvatar,
+          telegramId: account.id,
+          telegramUsername: account.username,
+        };
+      });
+      setBookingPlayerName((prev) => (prev.trim() ? prev : tgFullName));
+      showToast(`✓ Telegram verified (${formatTelegramBadge(account)})!`);
+    },
+    [showToast]
+  );
+
+  const handleDisconnectTelegram = useCallback(() => {
+    clearVerifiedTelegramAccount();
+    setTelegramAccount(null);
+    setBookingModalOpen(false);
+    setCurrentView('home');
+    showToast('Telegram account disconnected. Verify again to continue.');
+  }, [showToast]);
+
+  // Real-time Firestore listener for public Telegram Bot configuration
+  useEffect(() => {
+    const unsub = onSnapshot(
+      doc(db, 'booking_config', 'telegram_bot'),
+      (snap) => {
+        if (!snap.exists()) {
+          setTelegramBotConfig(null);
+          return;
+        }
+        const data = snap.data() as Record<string, unknown>;
+        setTelegramBotConfig({
+          botId: String(data.botId || ''),
+          botUsername: String(data.botUsername || '').replace(/^@+/, ''),
+          botName: String(data.botName || ''),
+          enabled: Boolean(data.enabled),
+        });
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, 'booking_config/telegram_bot');
+      }
+    );
+    return () => unsub();
+  }, []);
+
   // Persist player's local passes in localStorage
   useEffect(() => {
     try {
@@ -283,7 +381,7 @@ export function App() {
     };
   }, [myPassIdsKey]);
 
-  // Real-time Firestore listener for live matches (works across Telegram Bot & all browsers)
+  // Real-time Firestore listener for live matches
   useEffect(() => {
     const matchesQuery = query(collection(db, 'matches'), where('visibility', '==', 'live'));
     const unsubscribe = onSnapshot(
@@ -353,8 +451,9 @@ export function App() {
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         for (const nb of newlySubmittedPending) {
           try {
+            const tgSuffix = nb.telegram_username ? ` (@${nb.telegram_username})` : '';
             new Notification('⚽ New Payment Screenshot — GGmeets', {
-              body: `${nb.player_name} sent ${nb.amount} ETB (${nb.payment_method}) for ${nb.match_title}`,
+              body: `${nb.player_name}${tgSuffix} sent ${nb.amount} ETB (${nb.payment_method}) for ${nb.match_title}`,
             });
           } catch {
             // Ignore browser notification errors
@@ -595,6 +694,20 @@ export function App() {
     return null;
   };
 
+  const handleSaveTelegramBotConfig = async (
+    config: TelegramBotConfig
+  ): Promise<string | null> => {
+    if (!adminContext) {
+      return 'Admin session is locked.';
+    }
+    const { error } = await saveTelegramBotConfigServerless(adminContext.inboxKey, config);
+    if (error) {
+      return error;
+    }
+    showToast(`✈️ Connected @${config.botUsername}!`);
+    return null;
+  };
+
   const handleLockAdmin = () => {
     setStoredAdminInboxKey(null);
     setAdminContext(null);
@@ -663,6 +776,10 @@ export function App() {
   };
 
   const openBookingModalForEvent = (event: MatchEvent) => {
+    if (!telegramAccount) {
+      showToast('✈️ Please verify your Telegram account first.');
+      return;
+    }
     setSelectedEventId(event.id);
     setReceiptFilePreview(null);
     setIsProcessingReceipt(false);
@@ -670,7 +787,7 @@ export function App() {
     setBookingModalOpen(true);
   };
 
-  // Player submits Telebirr / CBE transfer screenshot directly to Firestore (zero /api/bookings 404s!)
+  // Player submits Telebirr / CBE transfer screenshot with verified Telegram identity directly to Firestore
   const handleClientBookingSubmit = async (
     e: React.FormEvent,
     refs: {
@@ -681,6 +798,11 @@ export function App() {
   ) => {
     e.preventDefault();
     if (!selectedEvent) return;
+
+    if (!telegramAccount) {
+      setBookingError('Please verify your Telegram account before booking.');
+      return;
+    }
 
     const cleanName = bookingPlayerName.trim().slice(0, MAX_PLAYER_NAME_LENGTH);
     const cleanPhone = bookingPlayerPhone.trim().slice(0, MAX_PHONE_LENGTH);
@@ -726,6 +848,7 @@ export function App() {
         playerPhone: cleanPhone,
         paymentMethod,
         screenshotUrl: receiptFilePreview,
+        telegramAccount,
       });
 
       if (!createdBooking || error) {
@@ -741,6 +864,8 @@ export function App() {
         ...prev,
         name: cleanName,
         phone: cleanPhone,
+        telegramId: telegramAccount.id,
+        telegramUsername: telegramAccount.username,
       }));
 
       setIsSubmittingBooking(false);
@@ -939,6 +1064,11 @@ export function App() {
                   </p>
                   <p className="text-[11px] text-slate-400 truncate">
                     {alertItem.match_title} • 📞 {alertItem.player_phone}
+                    {alertItem.telegram_username
+                      ? ` • ✈️ @${alertItem.telegram_username}`
+                      : alertItem.telegram_id
+                        ? ` • ✈️ TG #${alertItem.telegram_id}`
+                        : ''}
                   </p>
                   <div className="flex gap-2 mt-2.5">
                     <button
@@ -1040,6 +1170,11 @@ export function App() {
           allBookings={bookings}
           pendingCount={pendingCount}
           events={events}
+          telegramBotConfig={telegramBotConfig}
+          publicClientUrl={getPublicClientUrl()}
+          devClientUrl={getDevClientUrl()}
+          onSaveTelegramBotConfig={handleSaveTelegramBotConfig}
+          onCopyText={handleCopyText}
           onUpdatePaymentStatus={handleUpdatePaymentStatus}
           onCreateMatch={handleCreateMatch}
           onUpdateMatchLimit={handleUpdateMatchLimit}
@@ -1076,6 +1211,26 @@ export function App() {
     );
   }
 
+  // Mandatory Client Telegram Account Verification Gate before browsing & booking matches
+  if (!telegramAccount) {
+    return (
+      <>
+        {toastMessage && (
+          <div className="fixed top-5 right-5 z-[100] bg-[#00E676] text-black font-extrabold px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3">
+            <span>{toastMessage}</span>
+          </div>
+        )}
+        <TelegramVerifyGate
+          detectedWebAppAccount={detectedWebAppAccount}
+          botConfig={telegramBotConfig}
+          events={events}
+          onVerified={handleTelegramVerified}
+          onNavigateAdmin={() => navigate('/admin')}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="flex flex-col min-h-screen text-slate-100">
       {toastMessage && (
@@ -1089,6 +1244,7 @@ export function App() {
         setCurrentView={setCurrentView}
         myBookingsCount={myLocalPasses.length}
         userProfile={userProfile}
+        telegramAccount={telegramAccount}
       />
 
       {currentView === 'home' && (
@@ -1129,7 +1285,9 @@ export function App() {
       {currentView === 'profile' && (
         <ProfileView
           userProfile={userProfile}
+          telegramAccount={telegramAccount}
           onSaveProfile={handleSaveProfile}
+          onDisconnectTelegram={handleDisconnectTelegram}
           onFileUpload={handleFileUpload}
         />
       )}
@@ -1138,6 +1296,7 @@ export function App() {
         <BookingModal
           event={selectedEvent}
           bookings={bookings}
+          telegramAccount={telegramAccount}
           playerName={bookingPlayerName}
           setPlayerName={setBookingPlayerName}
           playerPhone={bookingPlayerPhone}

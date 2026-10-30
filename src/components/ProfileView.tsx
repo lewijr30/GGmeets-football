@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
-import { UserProfile } from '../types';
+import { formatTelegramBadge, getTelegramDisplayFullName } from '../lib/telegramAuth';
+import { TelegramAccount, UserProfile } from '../types';
 
 interface ProfileViewProps {
   userProfile: UserProfile;
+  telegramAccount: TelegramAccount;
   onSaveProfile: (updated: UserProfile) => void;
+  onDisconnectTelegram: () => void;
   onFileUpload: (
     e: React.ChangeEvent<HTMLInputElement>,
     callback: (dataUrl: string) => void
@@ -12,10 +15,14 @@ interface ProfileViewProps {
 
 export const ProfileView: React.FC<ProfileViewProps> = ({
   userProfile,
+  telegramAccount,
   onSaveProfile,
+  onDisconnectTelegram,
   onFileUpload,
 }) => {
-  const [name, setName] = useState(userProfile.name);
+  const [name, setName] = useState(
+    userProfile.name || getTelegramDisplayFullName(telegramAccount)
+  );
   const [phone, setPhone] = useState(userProfile.phone);
   const [neighborhood, setNeighborhood] = useState(userProfile.neighborhood);
 
@@ -62,14 +69,17 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
 
           <h2 className="text-2xl font-extrabold text-white">
-            {userProfile.name.trim() || 'Player Profile'}
+            {userProfile.name.trim() || getTelegramDisplayFullName(telegramAccount)}
           </h2>
           {userProfile.phone.trim() && (
             <p className="text-xs text-slate-400 font-mono mt-0.5">{userProfile.phone}</p>
           )}
 
-          <div className="flex gap-2 mt-3">
-            <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-[#111A2E] text-slate-300 border border-[#1E2D4A]">
+          <div className="flex flex-wrap justify-center gap-2 mt-3">
+            <span className="px-3 py-1 rounded-xl text-[11px] font-mono font-bold bg-[#2AABEE]/15 text-[#2AABEE] border border-[#2AABEE]/30">
+              ✓ Telegram Verified: {formatTelegramBadge(telegramAccount)}
+            </span>
+            <span className="px-3 py-1 rounded-xl text-[11px] font-bold bg-[#111A2E] text-slate-300 border border-[#1E2D4A]">
               📍 {userProfile.neighborhood || 'Addis Ababa'}
             </span>
           </div>
@@ -121,6 +131,24 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               Save Changes
             </button>
           </form>
+
+          <div className="w-full mt-5 pt-4 border-t border-[#1A263D] flex items-center justify-between gap-2 text-left">
+            <div>
+              <p className="text-[11px] font-bold text-slate-300">
+                Linked Telegram ID: <span className="font-mono">#{telegramAccount.id}</span>
+              </p>
+              <p className="text-[10px] text-slate-500">
+                Switch accounts if booking for another Telegram user.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onDisconnectTelegram}
+              className="px-3 py-2 rounded-xl bg-[#111A2E] hover:bg-red-500/20 text-slate-300 hover:text-red-300 border border-[#1E2D4A] hover:border-red-500/30 text-[11px] font-bold transition cursor-pointer shrink-0"
+            >
+              Switch Telegram
+            </button>
+          </div>
         </div>
       </div>
     </main>

@@ -19,7 +19,14 @@ import {
   formatFirestoreTime,
   handleFirestoreError,
 } from './firebase';
-import { Booking, BookingStatus, MatchEvent, PaymentMethod } from '../types';
+import {
+  Booking,
+  BookingStatus,
+  MatchEvent,
+  PaymentMethod,
+  TelegramAccount,
+  TelegramBotConfig,
+} from '../types';
 
 const JPEG_DATA_URL_PREFIX = 'data:image/jpeg;base64,';
 
@@ -33,6 +40,9 @@ export interface DecryptedPiiFields {
   player_name: string;
   player_phone: string;
   screenshot_url: string;
+  telegram_id?: string;
+  telegram_username?: string;
+  telegram_name?: string;
 }
 
 function isFirestorePermissionError(error: unknown): boolean {
@@ -198,7 +208,8 @@ async function encryptPlayerFields(
   publicKeySpki: string,
   playerName: string,
   playerPhone: string,
-  screenshotUrl: string
+  screenshotUrl: string,
+  telegramAccount: TelegramAccount
 ): Promise<{
   wrappedKey: string;
   ivName: string;
@@ -207,6 +218,8 @@ async function encryptPlayerFields(
   encPhone: string;
   ivReceipt: string;
   encReceipt: string;
+  ivTg: string;
+  encTg: string;
 }> {
   const rsaPub = await importPublicKeySpki(publicKeySpki);
   const aesKey = await window.crypto.subtle.generateKey(
@@ -222,6 +235,7 @@ async function encryptPlayerFields(
   const ivNameBytes = window.crypto.getRandomValues(new Uint8Array(12));
   const ivPhoneBytes = window.crypto.getRandomValues(new Uint8Array(12));
   const ivReceiptBytes = window.crypto.getRandomValues(new Uint8Array(12));
+  const ivTgBytes = window.crypto.getRandomValues(new Uint8Array(12));
 
   const encNameBuf = await window.crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: ivNameBytes },
@@ -240,6 +254,22 @@ async function encryptPlayerFields(
     toArrayBuffer(receiptBinary)
   );
 
+  const tgPayload = JSON.stringify({
+    id: String(telegramAccount.id),
+    username: telegramAccount.username ? telegramAccount.username.replace(/^@+/, '').slice(0, 64) : '',
+    name: [telegramAccount.firstName, telegramAccount.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim()
+      .slice(0, 80),
+    source: telegramAccount.source,
+  });
+  const encTgBuf = await window.crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: ivTgBytes },
+    aesKey,
+    enc.encode(tgPayload)
+  );
+
   return {
     wrappedKey: bytesToBase64(new Uint8Array(wrappedBuf)),
     ivName: bytesToBase64(ivNameBytes),
@@ -248,6 +278,8 @@ async function encryptPlayerFields(
     encPhone: bytesToBase64(new Uint8Array(encPhoneBuf)),
     ivReceipt: bytesToBase64(ivReceiptBytes),
     encReceipt: bytesToBase64(new Uint8Array(encReceiptBuf)),
+    ivTg: bytesToBase64(ivTgBytes),
+    encTg: bytesToBase64(new Uint8Array(encTgBuf)),
   };
 }
 
@@ -294,10 +326,39 @@ export async function decryptEncryptedBookingDoc(
         toArrayBuffer(base64ToBytes(String(data.encReceipt || '')))
       );
 
+      let telegramId: string | undefined;
+      let telegramUsername: string | undefined;
+      let telegramName: string | undefined;
+
+      if (data.ivTg && data.encTg) {
+        try {
+          const tgPlain = await window.crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: toArrayBuffer(base64ToBytes(String(data.ivTg))) },
+            aesKey,
+            toArrayBuffer(base64ToBytes(String(data.encTg)))
+          );
+          const parsedTg = JSON.parse(dec.decode(tgPlain)) as {
+            id?: string;
+            username?: string;
+            name?: string;
+          };
+          telegramId = parsedTg.id ? String(parsedTg.id) : undefined;
+          telegramUsername = parsedTg.username
+            ? String(parsedTg.username).replace(/^@+/, '')
+            : undefined;
+          telegramName = parsedTg.name ? String(parsedTg.name) : undefined;
+        } catch {
+          // Ignore malformed optional Telegram metadata
+        }
+      }
+
       pii = {
         player_name: dec.decode(namePlain) || 'Player',
         player_phone: dec.decode(phonePlain) || '',
         screenshot_url: decodeReceiptBinary(new Uint8Array(receiptPlain)),
+        telegram_id: telegramId,
+        telegram_username: telegramUsername,
+        telegram_name: telegramName,
       };
       if (id && cache) {
         cache.set(id, pii);
@@ -323,6 +384,9 @@ export async function decryptEncryptedBookingDoc(
     match_location: data.match_location ? String(data.match_location) : undefined,
     player_name: pii.player_name,
     player_phone: pii.player_phone,
+    telegram_id: pii.telegram_id,
+    telegram_username: pii.telegram_username,
+    telegram_name: pii.telegram_name,
     amount: Number(data.amount) || 0,
     payment_method: (rawMethod === 'CBE' ? 'CBE' : 'Telebirr') as PaymentMethod,
     status: (['pending', 'approved', 'rejected'].includes(rawStatus)
@@ -414,6 +478,74 @@ export async function ensureAdminVaultAndPublicChannel(
   }
 
   return { inboxKey, channelId, privateKey };
+}
+
+export async function saveTelegramBotConfigServerless(
+  inboxKey: string,
+  config: TelegramBotConfig
+): Promise<{ error?: string }> {
+  const cleanBotId = config.botId.trim();
+  const cleanUsername = config.botUsername.replace(/^@+/, '').trim();
+  const cleanName = (config.botName.trim() || cleanUsername).slice(0, 80);
+
+  if (!/^[0-9]{3,32}$/.test(cleanBotId)) {
+    return { error: 'Bot ID must be a valid numeric Telegram Bot ID (e.g. 7123456789).' };
+  }
+  if (!/^[a-zA-Z0-9_]{3,64}$/.test(cleanUsername)) {
+    return { error: 'Bot username must be a valid Telegram handle without @ (e.g. GGmeetsBot).' };
+  }
+
+  const configPath = 'booking_config/telegram_bot';
+  let existingSnap;
+  try {
+    existingSnap = await getDoc(doc(db, 'booking_config', 'telegram_bot'));
+  } catch (error) {
+    if (isFirestorePermissionError(error)) {
+      handleFirestoreError(error, OperationType.GET, configPath);
+    }
+    return { error: 'Could not read current Telegram Bot configuration.' };
+  }
+
+  const opId = makeOpIdBrowser();
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'admin_ops', opId), {
+    id: opId,
+    adminKey: inboxKey,
+    action: 'save_telegram_bot',
+    createdAt: serverTimestamp(),
+  });
+
+  if (existingSnap.exists()) {
+    batch.update(doc(db, 'booking_config', 'telegram_bot'), {
+      botId: cleanBotId,
+      botUsername: cleanUsername,
+      botName: cleanName,
+      enabled: Boolean(config.enabled),
+      lastAdminOpId: opId,
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    batch.set(doc(db, 'booking_config', 'telegram_bot'), {
+      id: 'telegram_bot',
+      botId: cleanBotId,
+      botUsername: cleanUsername,
+      botName: cleanName,
+      enabled: Boolean(config.enabled),
+      lastAdminOpId: opId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  try {
+    await batch.commit();
+    return {};
+  } catch (error) {
+    if (isFirestorePermissionError(error)) {
+      handleFirestoreError(error, OperationType.WRITE, configPath);
+    }
+    return { error: 'Could not save Telegram Bot configuration.' };
+  }
 }
 
 export async function checkAdminLockStatusServerless(
@@ -624,7 +756,14 @@ export async function submitPlayerBookingServerless(params: {
   playerPhone: string;
   paymentMethod: PaymentMethod;
   screenshotUrl: string;
+  telegramAccount: TelegramAccount;
 }): Promise<{ booking?: Booking; error?: string }> {
+  if (!params.telegramAccount || !params.telegramAccount.id || params.telegramAccount.id <= 0) {
+    return {
+      error: 'Please verify your Telegram account before booking a match.',
+    };
+  }
+
   const cleanName = params.playerName.trim().slice(0, MAX_PLAYER_NAME_LENGTH);
   const cleanPhone = params.playerPhone.trim().slice(0, MAX_PHONE_LENGTH);
   const cleanScreenshot = params.screenshotUrl.slice(0, MAX_IMAGE_LENGTH);
@@ -693,7 +832,8 @@ export async function submitPlayerBookingServerless(params: {
     publicKeySpki,
     cleanName,
     cleanPhone,
-    cleanScreenshot
+    cleanScreenshot,
+    params.telegramAccount
   );
 
   const bookingId = sanitizeFirestoreId(`b-${Date.now()}-${randomHex(4)}`, 'b');
@@ -730,6 +870,8 @@ export async function submitPlayerBookingServerless(params: {
     encPhone: encrypted.encPhone,
     ivReceipt: encrypted.ivReceipt,
     encReceipt: encrypted.encReceipt,
+    ivTg: encrypted.ivTg,
+    encTg: encrypted.encTg,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -767,6 +909,11 @@ export async function submitPlayerBookingServerless(params: {
     };
   }
 
+  const tgFullName = [params.telegramAccount.firstName, params.telegramAccount.lastName]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+
   const createdBooking: Booking = {
     id: bookingId,
     channelId,
@@ -778,6 +925,9 @@ export async function submitPlayerBookingServerless(params: {
     match_location: matchLocation,
     player_name: cleanName,
     player_phone: cleanPhone,
+    telegram_id: String(params.telegramAccount.id),
+    telegram_username: params.telegramAccount.username,
+    telegram_name: tgFullName,
     amount,
     payment_method: chosenMethod,
     status: 'pending',

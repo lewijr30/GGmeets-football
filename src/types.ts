@@ -1,6 +1,6 @@
 export type AppView = 'home' | 'events' | 'my-tickets' | 'profile';
 
-export type AdminTab = 'approvals' | 'create' | 'games';
+export type AdminTab = 'approvals' | 'create' | 'games' | 'telegram';
 
 export type ApprovalFilter = 'all' | 'pending' | 'approved' | 'rejected';
 
@@ -15,6 +15,24 @@ export interface PaymentAccountInfo {
   displayName: string;
   receiver: string;
   note: string;
+}
+
+export interface TelegramAccount {
+  id: number;
+  firstName: string;
+  lastName?: string;
+  username?: string;
+  photoUrl?: string;
+  authDate: number;
+  verifiedAt: string;
+  source: 'webapp' | 'widget';
+}
+
+export interface TelegramBotConfig {
+  botId: string;
+  botUsername: string;
+  botName: string;
+  enabled: boolean;
 }
 
 export interface MatchEvent {
@@ -47,6 +65,9 @@ export interface Booking {
   match_location?: string;
   player_name: string;
   player_phone: string;
+  telegram_id?: string;
+  telegram_username?: string;
+  telegram_name?: string;
   amount: number;
   payment_method: PaymentMethod;
   status: BookingStatus;
@@ -60,4 +81,6 @@ export interface UserProfile {
   neighborhood: string;
   avatar: string;
   rating: number;
+  telegramId?: number;
+  telegramUsername?: string;
 }

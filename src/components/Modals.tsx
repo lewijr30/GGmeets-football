@@ -1,12 +1,14 @@
 import React, { useRef } from 'react';
 import { PAYMENT_INFO } from '../constants/data';
-import { Booking, MatchEvent, PaymentMethod } from '../types';
+import { formatTelegramBadge } from '../lib/telegramAuth';
+import { Booking, MatchEvent, PaymentMethod, TelegramAccount } from '../types';
 import { getMatchCapacity } from '../utils/capacity';
 import { SpotTracker } from './SpotTracker';
 
 interface BookingModalProps {
   event: MatchEvent;
   bookings: Booking[];
+  telegramAccount: TelegramAccount;
   playerName: string;
   setPlayerName: (val: string) => void;
   playerPhone: string;
@@ -35,6 +37,7 @@ interface BookingModalProps {
 export const BookingModal: React.FC<BookingModalProps> = ({
   event,
   bookings,
+  telegramAccount,
   playerName,
   setPlayerName,
   playerPhone,
@@ -111,6 +114,22 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             }
             className="space-y-4"
           >
+            {/* Verified Telegram Identity Badge */}
+            <div className="p-3 rounded-2xl bg-[#2AABEE]/10 border border-[#2AABEE]/30 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-sm">✈️</span>
+                <span className="text-xs font-bold text-slate-200 truncate">
+                  Verified Telegram:{' '}
+                  <strong className="font-mono text-[#2AABEE]">
+                    {formatTelegramBadge(telegramAccount)}
+                  </strong>
+                </span>
+              </div>
+              <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-[#00E676]/20 text-[#00E676] shrink-0">
+                ✓ Verified
+              </span>
+            </div>
+
             <div className="bg-[#080D1A] p-4 rounded-2xl flex justify-between items-center border border-[#1E2D4A]">
               <span className="text-xs text-slate-300 font-semibold">Amount to Pay:</span>
               <span className="text-[#00E676] font-black text-lg">{event.price} ETB</span>
@@ -320,7 +339,7 @@ export const DetailModal: React.FC<DetailModalProps> = ({
           >
             ✕
           </button>
-          <div className="absolute bottom-3 left-3 bg-[#00E676] text-black text-xs font-black px-3 py-1 rounded-full">
+          <div className="absolute bottom-3 left-3 bg-[#00E676] text-black text-xs font-black px-3 py-1 rounded-lg">
             {event.event_type}
           </div>
         </div>
@@ -396,19 +415,38 @@ export const ReceiptZoomModal: React.FC<ReceiptZoomModalProps> = ({
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md">
       <div className="relative max-w-2xl w-full bg-[#0E1526] p-5 rounded-3xl border border-[#1A263D] space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
         <div className="flex justify-between items-start gap-3 pb-3 border-b border-[#1A263D]">
-          <div>
+          <div className="space-y-1">
             <h4 className="font-extrabold text-white text-base">
               Payment Screenshot Verification
             </h4>
             {booking ? (
-              <p className="text-xs text-slate-300 mt-0.5">
-                <strong className="text-white">{booking.player_name}</strong> • 📞{' '}
-                <span className="font-mono">{booking.player_phone}</span> •{' '}
-                <span className="text-[#00E676] font-extrabold">{booking.amount} ETB</span> via{' '}
-                {booking.payment_method}
-              </p>
+              <>
+                <p className="text-xs text-slate-300">
+                  <strong className="text-white">{booking.player_name}</strong> • 📞{' '}
+                  <span className="font-mono">{booking.player_phone}</span> •{' '}
+                  <span className="text-[#00E676] font-extrabold">{booking.amount} ETB</span> via{' '}
+                  {booking.payment_method}
+                </p>
+                {(booking.telegram_username || booking.telegram_id) && (
+                  <p className="text-xs text-[#2AABEE] font-mono font-bold">
+                    ✈️ Verified Telegram:{' '}
+                    {booking.telegram_username ? (
+                      <a
+                        href={`https://t.me/${booking.telegram_username.replace(/^@+/, '')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline hover:text-white"
+                      >
+                        @{booking.telegram_username.replace(/^@+/, '')}
+                      </a>
+                    ) : (
+                      <span>ID #{booking.telegram_id}</span>
+                    )}
+                  </p>
+                )}
+              </>
             ) : (
-              <p className="text-xs text-slate-400 mt-0.5">Attached payment transfer receipt</p>
+              <p className="text-xs text-slate-400">Attached payment transfer receipt</p>
             )}
           </div>
           <button

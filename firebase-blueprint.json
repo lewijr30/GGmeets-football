@@ -67,6 +67,70 @@
       },
       "required": ["id", "channelId", "publicKeySpki", "lastAdminOpId", "createdAt", "updatedAt"]
     },
+    "TelegramBotConfig": {
+      "title": "TelegramBotConfig",
+      "description": "Publicly readable non-secret Telegram Bot configuration enabling Telegram Mini App and OAuth Widget account verification.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Singleton Telegram config identifier ('telegram_bot').",
+          "enum": ["telegram_bot"],
+          "maxLength": 32
+        },
+        "botId": {
+          "type": "string",
+          "description": "Numeric Telegram Bot ID (never contains secret token).",
+          "minLength": 3,
+          "maxLength": 32,
+          "pattern": "^[0-9]+$"
+        },
+        "botUsername": {
+          "type": "string",
+          "description": "Telegram Bot username without @ symbol.",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_]+$"
+        },
+        "botName": {
+          "type": "string",
+          "description": "Telegram Bot display name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether mandatory client Telegram verification is active."
+        },
+        "lastAdminOpId": {
+          "type": "string",
+          "description": "ID of atomic AdminOp authorizing this bot configuration.",
+          "minLength": 6,
+          "maxLength": 128,
+          "pattern": "^op-[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Immutable server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update."
+        }
+      },
+      "required": [
+        "id",
+        "botId",
+        "botUsername",
+        "botName",
+        "enabled",
+        "lastAdminOpId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
     "BookingChannel": {
       "title": "BookingChannel",
       "description": "Master Gate parent document governing an encrypted booking channel subcollection.",
@@ -455,6 +519,18 @@
           "minLength": 20,
           "maxLength": 750000
         },
+        "ivTg": {
+          "type": "string",
+          "description": "Base64 12-byte AES-GCM IV for encrypted verified Telegram account metadata.",
+          "minLength": 12,
+          "maxLength": 32
+        },
+        "encTg": {
+          "type": "string",
+          "description": "Base64 AES-GCM ciphertext of verified Telegram account JSON payload.",
+          "minLength": 16,
+          "maxLength": 1024
+        },
         "lastAdminOpId": {
           "type": "string",
           "description": "Optional ID of atomic AdminOp when Host Admin approves or rejects.",
@@ -722,7 +798,7 @@
     },
     "/booking_config/{channelConfigId}": {
       "schema": { "$ref": "#/entities/PublicChannel" },
-      "description": "Singleton public RSA-OAEP-2048 encryption channel descriptor (list forbidden)."
+      "description": "Singleton public RSA-OAEP-2048 encryption channel and TelegramBotConfig descriptors (list forbidden)."
     },
     "/booking_channels/{channelId}": {
       "schema": { "$ref": "#/entities/BookingChannel" },

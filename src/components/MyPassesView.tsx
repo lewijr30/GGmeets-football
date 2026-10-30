@@ -52,6 +52,11 @@ export const MyPassesView: React.FC<MyPassesViewProps> = ({
             const matchDate = b.match_date || linkedEvent?.date || 'Scheduled';
             const matchTime = b.match_time || linkedEvent?.time || 'TBA';
             const matchLocation = b.match_location || linkedEvent?.location || 'Addis Ababa';
+            const tgLabel = b.telegram_username
+              ? `@${b.telegram_username.replace(/^@+/, '')}`
+              : b.telegram_id
+                ? `TG #${b.telegram_id}`
+                : null;
 
             return (
               <div
@@ -59,21 +64,28 @@ export const MyPassesView: React.FC<MyPassesViewProps> = ({
                 className="bg-[#0E1526] border border-[#1A263D] rounded-3xl p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6 shadow-xl"
               >
                 <div className="space-y-2 flex-1">
-                  <span
-                    className={`inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase ${
-                      b.status === 'approved'
-                        ? 'bg-[#00E676]/20 text-[#00E676] border border-[#00E676]/30'
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className={`inline-block px-3 py-1 rounded-lg text-[10px] font-black uppercase ${
+                        b.status === 'approved'
+                          ? 'bg-[#00E676]/20 text-[#00E676] border border-[#00E676]/30'
+                          : b.status === 'rejected'
+                            ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                            : 'bg-amber-400/20 text-amber-400 border border-amber-400/30'
+                      }`}
+                    >
+                      {b.status === 'approved'
+                        ? '✓ Verified Match Pass'
                         : b.status === 'rejected'
-                          ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-                          : 'bg-amber-400/20 text-amber-400 border border-amber-400/30'
-                    }`}
-                  >
-                    {b.status === 'approved'
-                      ? '✓ Verified Match Pass'
-                      : b.status === 'rejected'
-                        ? '✕ Payment Rejected'
-                        : '⏳ Receipt Sent • Pending Host Approval'}
-                  </span>
+                          ? '✕ Payment Rejected'
+                          : '⏳ Receipt Sent • Pending Host Approval'}
+                    </span>
+                    {tgLabel && (
+                      <span className="inline-block px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold bg-[#2AABEE]/15 text-[#2AABEE] border border-[#2AABEE]/30">
+                        ✈️ {tgLabel}
+                      </span>
+                    )}
+                  </div>
                   <h3 className="text-xl font-extrabold text-white">{b.match_title}</h3>
                   <p className="text-xs text-slate-400">
                     📅 {matchDate} • {matchTime} • 📍 {matchLocation}
