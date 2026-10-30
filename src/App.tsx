@@ -499,7 +499,7 @@ export function App() {
         for (const nb of newlySubmittedPending) {
           try {
             const tgSuffix = nb.telegram_username ? ` (@${nb.telegram_username})` : '';
-            new Notification('⚽ New Payment Screenshot — GGmeets', {
+            new Notification('⚽ New Payment Screenshot — JCmeets', {
               body: `${nb.player_name}${tgSuffix} sent ${nb.amount} ETB (${nb.payment_method}) for ${nb.match_title}`,
             });
           } catch {
@@ -633,11 +633,11 @@ export function App() {
   // Update browser tab title dynamically when Admin has pending approvals
   useEffect(() => {
     if (isAdminRoute && isAdminUnlocked && pendingCount > 0) {
-      document.title = `(${pendingCount}) 🔔 Payment Pending — GGmeets Admin`;
+      document.title = `(${pendingCount}) 🔔 Payment Pending — JCmeets Admin`;
     } else if (isAdminRoute) {
-      document.title = 'GGmeets — Host Admin';
+      document.title = 'JCmeets — Host Admin';
     } else {
-      document.title = 'GGmeets — Addis Ababa Football Meetup';
+      document.title = 'JCmeets — Addis Ababa Football Meetup';
     }
   }, [isAdminRoute, isAdminUnlocked, pendingCount]);
 
@@ -1165,7 +1165,7 @@ export function App() {
               </div>
               <div className="flex flex-col">
                 <span className="font-extrabold text-xl tracking-tight text-white leading-none">
-                  GG<span className="text-[#00E676]">meets</span> Admin
+                  JC<span className="text-[#00E676]">meets</span> Admin
                 </span>
                 <span className="text-[10px] text-[#00E676] font-bold tracking-wider uppercase">
                   ● Live Cloud Sync Active

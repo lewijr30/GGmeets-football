@@ -35,7 +35,7 @@ export const TelegramVerifyGate: React.FC<TelegramVerifyGateProps> = ({
   // Listen for official Telegram Login Widget callback & oauth.telegram.org postMessage
   useEffect(() => {
     const win = window as unknown as Record<string, unknown>;
-    win.__onGGmeetsTelegramAuth = (rawUser: unknown) => {
+    win.__onJCmeetsTelegramAuth = (rawUser: unknown) => {
       const verified = normalizeWidgetPayload(rawUser);
       if (verified) {
         onVerified(verified);
@@ -62,7 +62,7 @@ export const TelegramVerifyGate: React.FC<TelegramVerifyGateProps> = ({
 
     window.addEventListener('message', handleMessage);
     return () => {
-      delete win.__onGGmeetsTelegramAuth;
+      delete win.__onJCmeetsTelegramAuth;
       window.removeEventListener('message', handleMessage);
     };
   }, [onVerified]);
@@ -81,7 +81,7 @@ export const TelegramVerifyGate: React.FC<TelegramVerifyGateProps> = ({
     script.setAttribute('data-radius', '12');
     script.setAttribute('data-request-access', 'write');
     script.setAttribute('data-userpic', 'true');
-    script.setAttribute('data-onauth', '__onGGmeetsTelegramAuth(user)');
+    script.setAttribute('data-onauth', '__onJCmeetsTelegramAuth(user)');
     container.appendChild(script);
 
     return () => {
@@ -101,7 +101,7 @@ export const TelegramVerifyGate: React.FC<TelegramVerifyGateProps> = ({
           </div>
           <div>
             <h1 className="text-3xl font-extrabold tracking-tight text-white">
-              GG<span className="text-[#00E676]">meets</span>
+              JC<span className="text-[#00E676]">meets</span>
             </h1>
             <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mt-1">
               Addis Ababa Pickup Football
@@ -214,7 +214,7 @@ export const TelegramVerifyGate: React.FC<TelegramVerifyGateProps> = ({
                   ⚙️ Telegram Bot Connection Pending
                 </p>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Open <strong className="text-white">GGmeets</strong> directly from our official
+                  Open <strong className="text-white">JCmeets</strong> directly from our official
                   Telegram Bot Mini App to verify your Telegram account automatically.
                 </p>
               </div>

@@ -850,7 +850,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   type="text"
                   value={manualBotUsername}
                   onChange={(e) => setManualBotUsername(e.target.value)}
-                  placeholder="Bot Username (e.g. GGmeetsBot)"
+                  placeholder="Bot Username (e.g. JCmeetsBot)"
                   className="px-3.5 py-2.5 rounded-xl bg-[#0E1526] border border-[#1E2D4A] text-white text-xs focus:border-[#2AABEE] focus:outline-none"
                 />
                 <input

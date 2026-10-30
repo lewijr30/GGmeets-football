@@ -33,7 +33,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
             <div className="flex flex-col">
               <span className="font-extrabold text-xl tracking-tight text-white leading-none">
-                GG<span className="text-[#00E676]">meets</span>
+                JC<span className="text-[#00E676]">meets</span>
               </span>
               <span className="text-[10px] text-slate-400 font-semibold tracking-wider uppercase">
                 Addis Ababa

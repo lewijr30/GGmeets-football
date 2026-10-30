@@ -63,7 +63,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
             </div>
             <div className="flex flex-col">
               <span className="font-extrabold text-xl tracking-tight text-white leading-none">
-                GG<span className="text-[#00E676]">meets</span>
+                JC<span className="text-[#00E676]">meets</span>
               </span>
               <span className="text-[10px] text-slate-400 font-semibold tracking-wider uppercase">
                 Host Admin Lock
@@ -76,7 +76,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
             onClick={onNavigateHome}
             className="px-4 py-2 rounded-xl bg-[#111A2E] hover:bg-[#16233B] text-slate-300 border border-[#1E2D4A] text-xs font-bold transition cursor-pointer"
           >
-            ← Back to GGmeets
+            ← Back to JCmeets
           </button>
         </div>
       </header>
